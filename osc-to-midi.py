@@ -4,6 +4,13 @@
 #
 # ZOMG!!! Suddenly all the riches of the Gigastudio sample world is available from Sonic Pi!
 
+# NOTE: You will need the sonic-pi-init.rb in this folder - it will need to be saved as
+#       ~/.sonic-pi/init.rb
+#
+# Then restart Sonic Pi, start this script, and you will be able to send MIDI notes
+# by using the new functions 'posc' and 'pppt'
+#
+#
 
 # You will need to install the rtmidi Python library, try one of these commands:
 #
