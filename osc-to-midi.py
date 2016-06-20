@@ -18,8 +18,11 @@
 #
 # $ easy_install python-rtmidi
 #
-# .... and the same fom 'pyosc'
-#
+# ... and the same fom 'pyosc'
+# ... and 'tkinter' (if you want to add trackpad control support to Sonic Pi)
+
+# set this to true to send trackpad X Y values to Sonic Pi via OSC
+SEND_MOUSE = True
 
 import socket, OSC, re, threading, math, time, sys
 import rtmidi
@@ -30,6 +33,24 @@ from threading import Timer
 
 from numpy import interp
 
+import pdb
+
+# this import seems to take a long time... why? how hard is mouse tracking?
+if SEND_MOUSE:
+    # import pymouse
+    #import Tkinter as tk
+    from Tkinter import *
+    root = Tk()
+    # Sonic PI only accepts OSC connections from the same machine, i.e. localhost
+    send_address_pi = 'localhost',  4557
+    pi = OSC.OSCClient()
+    try:
+        pi.connect(send_address_pi)
+    except:
+        print("ERROR: couldn't connect to sonic pi")
+
+
+
 # import subprocess
 # ipaddr = subprocess.Popen(["ipconfig", "getifaddr", "en0"], stdout=subprocess.PIPE).communicate()[0].rstrip()
 receive_address = '127.0.0.1', 1122
@@ -37,6 +58,7 @@ receive_address = '127.0.0.1', 1122
 midiout = rtmidi.MidiOut()
 available_ports = midiout.get_ports()
 midiout.open_virtual_port("Sonic Pi output")
+
 
 
 if len(sys.argv) > 1:
@@ -49,11 +71,11 @@ if len(sys.argv) > 1:
 
 def send_osc(args):
     try:
-        print args
+        # print args
         msg = OSC.OSCMessage("/run-code")
         #cmd = "play " + str(note) + ", attack: 0.001"
         msg.append([0, args])
-        phone.send(msg)
+        pi.send(msg)
         #pi.send( OSC.OSCMessage("/run", [22]) ) # why the fuck does this no longer work?
         # print "sent " + args
     except Exception as ex:
@@ -115,9 +137,50 @@ st = threading.Thread( target = s.serve_forever )
 st.start()
 # and that's it for the OSC
 
+def motion(event):
+    x, y = event.x, event.y
+    print('{}, {}'.format(x, y))
+
+def dn(ev):
+    print ev
+#
+if SEND_MOUSE:
+    screen_width = float( root.winfo_screenwidth() )
+    screen_height = float( root.winfo_screenheight() )
+#     # mouse = pymouse.PyMouse()
+#     root.bind('<Motion>', motion)
+#     root.mainloop()
+# else:
+
+lastx = 0
+lasty = 0
+
+# root.bind('<Motion>', motion)
+# root.bind('<Key>', dn)
+# # pdb.set_trace()
+# root.mainloop()
+
+
 try :
     while True:
-        time.sleep(1)
+        if SEND_MOUSE:
+            # print mouse.position()
+            x = root.winfo_pointerx() / screen_width
+            y = root.winfo_pointery() / screen_height
+            if x > 0.999:
+                x = 1.0
+            if y > 0.999:
+                y = 1.0
+            #print x, y
+            if x != lastx or y != lasty:
+                # pdb.set_trace()
+                send_osc("set_sched_ahead_time! 0.01; @mousex = %.4f ; @mousey = %.4f" % (x, y))
+                lastx = x
+                lasty = y
+            time.sleep(0.001)
+        else:
+            time.sleep(1)
+
     #sys.stdin.readline()
 except KeyboardInterrupt :
     print ("\nClosing OSCServer.")

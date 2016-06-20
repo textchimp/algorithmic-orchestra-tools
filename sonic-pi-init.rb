@@ -58,6 +58,50 @@ def silence(chan)
 end
 
 
+
+
+
+# mouse/trackpad control code!
+# needs osc-to-midi.py script to be running to receive values over OSC
+#
+# usage:
+#
+# mx()       : return a float between 0 and 1 representing the position of the
+#              mouse/trackpad pointer on the screen (0 = full left, 1 = full right)
+#
+# mx(n)      : return a float between 0 and n based on the pointer position
+#
+# mx(n1, n2) : return a float between n1 and n2 proportional to the pointer position
+#
+# same for my()  (0 = top of screen, 1 = bottom)
+
+@mousex = 0
+@mousey = 0
+
+def mx(*args)
+  case args.length
+  when 0
+    @mousex
+  when 1
+    @mousex * args[0]
+  when 2
+    @mousex * (args[1] - args[0]) + args[0]
+  end
+end
+
+def my(*args)
+  case args.length
+  when 0
+    @mousey
+  when 1
+    @mousey * args[0]
+  when 2
+    @mousey * (args[1] - args[0]) + args[0]
+  end
+end
+
+
+
 # misc utility fns
 
 def vr(*arr)
