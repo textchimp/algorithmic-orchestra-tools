@@ -24,6 +24,9 @@
 # set this to true to send trackpad X Y values to Sonic Pi via OSC
 SEND_MOUSE = True
 
+# set this to true to enable broadcasting of cue triggers over local network to anyone listening
+SEND_CUE_BROADCAST = True
+
 import socket, OSC, re, threading, math, time, sys
 import rtmidi
 from rtmidi.midiutil import open_midiport
@@ -33,14 +36,14 @@ from threading import Timer
 
 from numpy import interp
 
-import pdb
+# import pdb
 
 # this import seems to take a long time... why? how hard is mouse tracking?
 if SEND_MOUSE:
     # import pymouse
-    #import Tkinter as tk
-    from Tkinter import *
-    root = Tk()
+    import Tkinter as tk
+    # from Tkinter import *
+    root = tk.Tk()
     # Sonic PI only accepts OSC connections from the same machine, i.e. localhost
     send_address_pi = 'localhost',  4557
     pi = OSC.OSCClient()
@@ -51,10 +54,22 @@ if SEND_MOUSE:
 
 
 
-# import subprocess
-# ipaddr = subprocess.Popen(["ipconfig", "getifaddr", "en0"], stdout=subprocess.PIPE).communicate()[0].rstrip()
-receive_address = '127.0.0.1', 1122
+receive_address = '', 1122  # don't care about destination address of incoming msg / use default address
 
+
+# if SEND_CUE_BROADCAST:
+#     send_address_pi = '192.168.1.255', receive_address[1]
+#     # this will give a 'permission denied' error
+#     # ...unless in OSC.py we can do something like "s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)"
+#     osc_broadcast = OSC.OSCClient()
+#     try:
+#         osc_broadcast.connect(send_address_pi)
+#     except:
+#         print("ERROR: couldn't connect to cue broadcast address")
+#
+
+
+# MIDI port init
 midiout = rtmidi.MidiOut()
 available_ports = midiout.get_ports()
 midiout.open_virtual_port("Sonic Pi output")
@@ -69,26 +84,47 @@ if len(sys.argv) > 1:
         midiout.send_message([ 0x90 + int(sys.argv[1]), 60, 80 ]) #minst, int(zmag)])
         time.sleep(2)
 
+
 def send_osc(args):
     try:
-        # print args
+        #print args
         msg = OSC.OSCMessage("/run-code")
-        #cmd = "play " + str(note) + ", attack: 0.001"
-        msg.append([0, args])
+        msg.append([0, args]) # note undocumented first argument required by Sonic Pi
         pi.send(msg)
         #pi.send( OSC.OSCMessage("/run", [22]) ) # why the fuck does this no longer work?
         # print "sent " + args
     except Exception as ex:
         print ex
 
+
+# for now we can do this from Sonic Pi, without getting the "permission denied" error
+# def send_cue_broadcast(args):
+#     try:
+#         msg = OSC.OSCMessage("/cue")
+#         msg.append([args])
+#         osc_broadcast.send(msg)
+#         print msg
+#     except Exception as ex:
+#         print ex
+#
+
 def noteoff(note, chan):
     midiout.send_message([ chan, note, 0])
     # print("note: " + str(note))
 
 
+def sendcue_handler(addr, tags, stuff, source):
+    send_cue_broadcast(stuff[0])
+
+def cue_handler(addr, tags, stuff, source):
+    cue_name = stuff[0]
+    arg = stuff[1]
+    send_osc("set_sched_ahead_time! 0.01; cue :%s, arg0: %s" % (cue_name, arg))
+
 def note_handler(addr, tags, stuff, source):
 
     # [0, 1, 2, 3, *4] = note, vel, channel, pan, optional duration
+    print stuff
 
     chan = stuff[2] - 1  #adjust channel to fit expected LinuxSampler setup
     note = stuff[0]
@@ -124,9 +160,20 @@ def note_handler(addr, tags, stuff, source):
         Timer(dur, noteoff, [ note, 0x90 + chan] ).start()
         # offtimer[played_notes].start()
 
+def default_handler(addr, tags, stuff, source):
+    print "SERVER: No handler registered for ", addr
+    return None
+
 s = OSC.OSCServer(receive_address)
 s.addDefaultHandlers()
+
 s.addMsgHandler("/note", note_handler)
+
+# s.addMsgHandler("/send_cue", sendcue_handler) # broadcast a cue from Sonic Pi on this machine
+
+s.addMsgHandler("/cue", cue_handler) # deal with a cue received over the network
+
+s.addMsgHandler("default", default_handler)
 
 for addr in s.getOSCAddressSpace():
     print( addr )

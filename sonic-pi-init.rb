@@ -1,5 +1,9 @@
 # Sonic Pi init file
 # Code in here will be evaluated on launch.
+#
+# NOTE: this file should be saved as ~/.sonic-pi/init.rb
+#
+# Any changes made here will require a restart of Sonic Pi to take effect.
 
 # $LOAD_PATH << '~/.sonic-pi'
 
@@ -7,8 +11,27 @@
 #$LOAD_PATH << File.join(SonicPi::Util.root_path, "/app/server/sonicpi/lib/sonicpi/osc")
 #require 'socket'
 
+# socket for sending OSC events to osc-to-midi.py server, to translate into MIDI note events
 @oscmidi_socket = UDPSocket.new
 @oscmidi_server, @oscmidi_port = '127.0.0.1', 1122
+
+
+# socket for sending broacast cue triggers over the network
+@osc_broadcast_socket = UDPSocket.new
+
+# IP address for broadcast will vary from network to network, but should be "inverse of netmask"
+@osc_broadcast_server = '192.168.1.255'
+@osc_broadcast_port = @oscmidi_port
+# need to set this socket as having permission to send broadcast messages
+@osc_broadcast_socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_BROADCAST, true)
+
+# broadcast a cue over the network
+def netcue(*args)
+  @osc_broadcast_socket.send(SonicPi::OSC::OscEncode.new.encode_single_message("/cue", args.map{|a| a.to_s }), 0, @osc_broadcast_server, @osc_broadcast_port)
+
+end
+
+
 
 def sendosc(note, vel, chan, pan, dur)
   note = *note  # wrap single value in array if necessary
