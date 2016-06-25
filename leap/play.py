@@ -4,6 +4,7 @@
 # By Luke Hammer 2016 for the Algorithmic Orchestra
 #
 # Packages required:
+#
 # Leap Motion SDK v2.3.1 (?)
 # - Note that this script expects to find 'Leap.py', 'LeapPython.so' and 'libLeap.dylib' in the same folder
 #   (These files are provided by the SDK in the lib/ folder)
@@ -11,16 +12,17 @@
 # - rtmidi (`pip install --pre python-rtmidi` or `easy_install python-rtmidi`)
 # - pyosc  (`pip install --pre pyosc` or `easy_install pyosc`)
 # - readchar (`pip install --pre readchar` or `easy_install readchar`)
-# - numpy  (`pip install --pre readchar` or `easy_install readchar`)
+# - numpy  (`pip install --pre numpy` or `easy_install numpy`)
+#
 #
 # This script will let you communicate with Sonic Pi via OSC pretty easily,
-# but if you want the full orhcestra sample experience, you will need the following:
+# but if you want the full orchestra sample experience, you will need the following:
 #
 #  - LinuxSampler plus Fantasia frontend: http://www.linuxsampler.org/downloads.html
 #  - Awesome piano sample library: http://download.linuxsampler.org/instruments/pianos/maestro_concert_grand_v2.rar (~1GB uncompressed)
 #  - Possibly a program like Midi Patchbay (on OSX) to connect the MIDI output port from
-#   this script to LinuxSampler: http://notahat.com/midi_patchbay/
-
+#    this script to LinuxSampler: http://notahat.com/midi_patchbay/
+#
 # TODO:
 #  - consider using an 'adaptive plane' such as the vertical 'touch emulation' supported by the SDK,
 #    so the Y play threshold is not absolute, but moves relative to the hand - could be easier for people to learn to play
@@ -39,6 +41,8 @@ from threading import Timer
 
 import socket, OSC
 
+import math
+
 import readchar
 
 import rtmidi
@@ -49,7 +53,7 @@ from numpy import interp
 
 # Sonic PI only accepts OSC connections from the same machine, i.e. localhost
 send_address_pi = 'localhost',  4557
-USE_OSC = True
+USE_OSC = False
 
 # default MIDI channel, i.e. instrument
 # you will need to change this depending on your sampler setup
@@ -60,21 +64,30 @@ channel = 2
 current_scale = 0
 current_key = 0
 
+ALLFINGER_MODE = 0
+ONEFINGER_MODE = 1
+play_mode = ALLFINGER_MODE #ONEFINGER_MODE
+
 # we do specific note calculation for drum sequencer:
 # this assumes Hydrogen as our drum machine, but which channel depends on your setup
-DRUM_CHANNEL = 1
+DRUM_CHANNEL = 0
 
 DEBUG = 1
 
-PLANEY = 300.0                  # Note trigger Y plane height
-PLANEY_SILENCE = PLANEY + 50.0  # Y height which hand must cross in upward motion, to trigger silence
+FINGER_VELOCITY_Y = -500
+FINGER_VELOCITY_RANGE = [500, 900]
+
+PLANEY = 200.0                  # Note trigger Y plane height
+PLANEY_SILENCE = PLANEY + 80.0  # Y height which hand must cross in upward motion, to trigger silence
 VELY_SILENCE = 600.0            # Y minimum velocity hand must be travelling at to trigger silence
 
 SILENCE_MIN_INTERVAL = 0.5      # Minimum time between triggering silence, in seconds
 
 last_silence_time = 0
 
-VELOCITY_RANGE = [20, 110]      # output MIDI velocity range
+VELOCITY_RANGE =  [20, 90]   #[20, 110]      # output MIDI velocity range
+
+DRUM_RANGE = [ 36, 50 ]
 
 # indexes into hand arrays
 LEFT = 1
@@ -85,6 +98,13 @@ hands_crossed_plane = [ [False] * 5, [False] * 5 ]  # track if fingers cross the
 
 hands_last_note = [ [0] * 5, [0] * 5 ]              # track last note played by each finger, for 'hold' effect
 
+hands_note_ypos = [ [0] * 5, [0] * 5 ]              # y pos at last note play (to check if re-crossed)
+hands_note_time = [ [0] * 5, [0] * 5 ]              # time last note played for each finger
+
+last_note =  {} #{'note': 0, 'x': 0, 'y': 0, 'z':0, 'finger': 0}
+
+swipe_rec = []
+
 # setup MIDI
 midiout = rtmidi.MidiOut()
 available_ports = midiout.get_ports()
@@ -93,6 +113,8 @@ midiout.open_virtual_port("Leap Motion output")
 MIDI_NOTE_MIN = 19
 MIDI_NOTE_MAX = 109
 MIDI_RANGE = MIDI_NOTE_MAX - MIDI_NOTE_MIN
+
+panmidi = 64
 
 if USE_OSC:
     pi = OSC.OSCClient()
@@ -112,7 +134,6 @@ MajorChord = [0, 4, 7]
 MinorChord = [0, 3, 7]
 Min7 = [0, 3, 7, 10]
 Sus4 = [0, 5, 7]
-Balinese = [0, 1, 3, 7, 8]
 Maj7 = [0, 4, 7, 11]
 Shiva = [2, 4, 9, 11]
 Oriental = [0, 1, 4, 5, 6, 9, 10]
@@ -129,7 +150,7 @@ Minor = [0, 2, 3, 5, 7, 8, 10]
 # Sus4=[0, 5, 7]
 # WholeTone=[0, 2, 4, 6, 8, 10]
 # Blues=[0, 2, 3, 5, 6, 7, 9, 10,11]
-# MajorPentatonic=[0, 2, 4, 5, 7]
+MajorPentatonic=[0, 2, 4, 5, 7]
 # NeapolitanMinor=[0, 1, 3, 5, 7, 8, 11]
 # NeapolitanMajor=[0, 1, 3, 5, 7, 9, 11]
 # Oriental=[0, 1, 4, 5, 6, 9, 10]
@@ -161,8 +182,8 @@ Minor = [0, 2, 3, 5, 7, 8, 10]
 # set which scales are available to the app
 # the scale currently in use is mapped to the Z-axis for now
 
-scales = [Balinese, Minor]
-scale_names =  ['Balinese',  'Minor']
+scales = [Balinese, Minor, Maj7, MajorPentatonic]
+scale_names =  ['Balinese',  'Minor', 'Maj7', 'MajorPentatonic']
 # scales = [Test1, Test2, Test3, Test4, Test5, Arabian, Balinese, Gypsy, MajorChord, MinorChord, Min7, Sus4, Pelog, Major, Minor]
 # scale_names =  ['Test1', 'Test2', 'Test3', 'Test4', 'Test5', 'Arabian', 'Balinese', 'Gypsy', 'MajorChord', 'MinorChord', 'Min7', 'Sus4', 'Pelog', 'Major', 'Minor']
 
@@ -245,14 +266,19 @@ class SampleListener(Leap.Listener):
         # Enable gestures - lots to play with here
         #
         # controller.enable_gesture(Leap.Gesture.TYPE_CIRCLE);
-        # controller.enable_gesture(Leap.Gesture.TYPE_KEY_TAP);
         # controller.enable_gesture(Leap.Gesture.TYPE_SCREEN_TAP);
-        # controller.enable_gesture(Leap.Gesture.TYPE_SWIPE);
 
+
+        # controller.enable_gesture(Leap.Gesture.TYPE_SWIPE);
+        # controller.enable_gesture(Leap.Gesture.TYPE_KEY_TAP);
+
+        controller.config.set("Gesture.Swipe.MinLength", 100.0) #100
+        controller.config.set("Gesture.Swipe.MinVelocity", 750) #750
+        controller.config.save()
 
     def on_frame(self, controller):
 
-        global last_silence_time, note
+        global last_silence_time, note, swipe_rec, panmidi, last_note
 
         frame = controller.frame()
 
@@ -260,9 +286,16 @@ class SampleListener(Leap.Listener):
         scale_change = 1
         front = frame.pointables.frontmost
         if front.is_valid:
-            scale_change = int( interp(front.tip_position.z, [-200, 200], [ len(scales), 0 ]) )
+            scale_change = int( interp(front.tip_position.z, [-160, 200], [ len(scales)-1, 0 ]) )
 
-        for pointable in frame.pointables:
+        tracked_fingers = []
+        if play_mode == ONEFINGER_MODE:
+            tracked_fingers.append( frame.pointables.frontmost )
+        elif play_mode == ALLFINGER_MODE:
+            tracked_fingers = frame.pointables
+
+        for pointable in tracked_fingers:
+        #for pointable in frame.pointables:
 
             # example attributes for pointable[0]:
             # 'frame', 'hand', 'id', 'invalid', 'is_extended', 'is_finger', 'is_tool', 'is_valid', 'length', 'stabilized_tip_position',
@@ -299,7 +332,67 @@ class SampleListener(Leap.Listener):
             # PLAY NOTE ON 'PLANEY' THRESHOLD CROSS
             # but only if the finger was previously above the threshold
             # (is the y velocity test necessary??)
-            if hands_crossed_plane[handid][fingerid] == False and fingerpos.y <= PLANEY: # and fingervel.y < 0.0:
+
+
+            # new play of finger when y velocity > a value
+            # threshold defined by y pos at time of velocity trigger, no notes until recrossed or time limit
+
+            if hands_crossed_plane[handid][fingerid] == True and fingerpos.y > hands_note_ypos[handid][fingerid]:
+
+                # print "\r\nRESET %.1f" % fingerpos.y
+                hands_crossed_plane[handid][fingerid] = False
+
+            if True:
+
+                # velocity-based play! easier! no absolute Y plane to pass! Y-plane is per-finger per per-note
+
+                if fingervel.y < FINGER_VELOCITY_Y and (hands_crossed_plane[handid][fingerid] == False
+                                                        or time.time() - hands_note_time[handid][fingerid] > 0.2 ):
+
+                    # print "play!"
+                    hands_note_time[handid][fingerid] = time.time()
+
+                    vel = int( interp(abs(fingervel.y), FINGER_VELOCITY_RANGE, VELOCITY_RANGE) )
+
+                    if pinch > 0.8:
+                        note = hands_last_note[handid][fingerid]
+                        print "\r\nPINCH"
+                    else:
+                        maxind = len(scale_midi_notes[current_key][scale_change ]) - 1
+                        noteindex = int( interp(fingerpos.x, [-250, 250], [0, maxind]) )
+                        note = scale_midi_notes[key][scale_change][noteindex]
+
+                    hands_crossed_plane[handid][fingerid] = True
+                    hands_note_ypos[handid][fingerid] = fingerpos.y;
+                    hands_last_note[handid][fingerid] = note  # keep track of last note played, for hold effect
+
+
+                    # undocumented NRPN per-note panning for LinuxSampler:
+                    #1: CC 99, value 28
+                    #2: CC 98, note value 1-127
+                    #3: CC 06, pan value 1-127 (127 is full left?)
+                    midiout.send_message([ 176 + channel, 99, 28 ])
+                    midiout.send_message([ 176 + channel, 98, note ])
+                    midiout.send_message([ 176 + channel, 06, panmidi ])
+                    # print "pan: %d" % panmidi
+
+                    if DEBUG:
+                        sys.stdout.write("\rPLAY [%d][%d] %.2f (%d : v=%d) Z = %.2f sc: %s ; p = %.2f, g = %.2f touch = %.2f"
+                        % (handid, fingerid, fingervel.y, note, vel, fingerpos.z, scale_names[scale_change], pinch, grab, pointable.touch_distance  ))
+                        sys.stdout.flush()
+
+                    midiout.send_message([ 0x90 + channel, note, vel ])
+
+                    if grab > 0.5:
+                        dur = (1 - grab) * 2
+                        Timer(dur, noteoff, [ note, 0x90 + channel] ).start()
+
+
+                    last_note = {'note': note, 'x': fingerpos.x, 'y': fingerpos.y, 'z':fingerpos.z, 'finger': pointable}
+
+
+
+            elif hands_crossed_plane[handid][fingerid] == False and fingerpos.y <= PLANEY: # and fingervel.y < 0.0:
 
                 # get note velocity (volume) from finger Y-axis velocity at moment it crosses threshold
                 vel = int( interp(abs(fingervel.y), [50, 2000], VELOCITY_RANGE) )
@@ -311,11 +404,11 @@ class SampleListener(Leap.Listener):
 
                     if channel == DRUM_CHANNEL:
                         # use a special range of notes (approx 36-50) for the drum sampler channel (i.e. Hydrogen drum machine)
-                         note = int( interp(fingerpos.x, [-250, 250], [ 36, 50 ]) )
+                         note = int( interp(fingerpos.x, [-250, 250], DRUM_RANGE) )
                     else:
                         # calculate note from X-axis position, left is lower, right is higher, like a real piano
                         # i.e. our X-axis position is mapped to an index into all the notes in the current scale's array
-                        maxind = len(scale_midi_notes[current_key][current_scale]) - 1
+                        maxind = len(scale_midi_notes[current_key][scale_change]) - 1
                         noteindex = int( interp(fingerpos.x, [-250, 250], [0, maxind]) )
                         try:
                             # getting some IndexError exceptions here when changing between scales (Z-axis movement)
@@ -330,8 +423,8 @@ class SampleListener(Leap.Listener):
 
 
                 if DEBUG:
-                    sys.stdout.write("\rPLAY [%d][%d] %.2f (%d : v=%d) Z = %.2f sc: %s ; p = %.2f, g = %.2f"
-                    % (handid, fingerid, fingervel.y, note, vel, fingerpos.z, scale_names[scale_change], pinch, grab))
+                    sys.stdout.write("\rPLAY [%d][%d] %.2f (%d : v=%d) Z = %.2f sc: %s ; p = %.2f, g = %.2f touch = %.2f"
+                    % (handid, fingerid, fingervel.y, note, vel, fingerpos.z, scale_names[scale_change], pinch, grab, pointable.touch_distance  ))
                     sys.stdout.flush()
 
 
@@ -345,7 +438,7 @@ class SampleListener(Leap.Listener):
                     # TODO: to modify parameters of a running synth, you'd probably have to do
                     # something clever with function definitions or global variables
                     # TODO: think of all the parameters you could control with hand XYZ values, rotation values, gesture values
-                    
+
                     amp = interp(abs(fingervel.y), [50, 2000], [0.1, 1.2])
                     sustain = 1.0 - grab  # use degree of fistiness
 
@@ -363,8 +456,8 @@ class SampleListener(Leap.Listener):
                 # - fully closed fist = very short notes
                 # - more open fist = longer notes
                 # - fully open hand = no note end
-                if grab > 0.1:
-                    dur = 1.0 - grab
+                if grab > 0.5:
+                    dur = (1 - grab) * 2
                     Timer(dur, noteoff, [ note, 0x90 + channel] ).start()
 
 
@@ -383,11 +476,19 @@ class SampleListener(Leap.Listener):
 
             palm_position = hand.palm_position
             palm_velocity = hand.palm_velocity
+            palm_normal = hand.palm_normal
+
+            roll = 180.0 * palm_normal.roll / math.pi
+            panmidi = interp(roll, [-90, 90], [1, 127])
+
+            # sys.stdout.write("\rnorm: %.2f" % (interp(roll, [-90, 90], [-1.0, 1.0])))
+            # sys.stdout.flush()
 
             # silence gesture
-            if palm_velocity.y > VELY_SILENCE and palm_position.y > PLANEY_SILENCE:
+            if palm_velocity.y > VELY_SILENCE and palm_position.y > last_note['y']: #PLANEY_SILENCE:
                 if time.time() - last_silence_time > SILENCE_MIN_INTERVAL:
-                    print( "SILENCE" )
+                    print "SILENCE"
+                    #print last_note
                     silence(channel)
                     last_silence_time =  time.time()
 
@@ -435,8 +536,11 @@ class SampleListener(Leap.Listener):
 
 
         # Get gestures - not using these yet (from SDK Sample.py)
-        if False:
+        if True:
             for gesture in frame.gestures():
+
+                #if self.state_names[gesture.state] == 'STATE_END':
+
                 if gesture.type == Leap.Gesture.TYPE_CIRCLE:
                     circle = CircleGesture(gesture)
 
@@ -458,15 +562,62 @@ class SampleListener(Leap.Listener):
 
                 if gesture.type == Leap.Gesture.TYPE_SWIPE:
                     swipe = SwipeGesture(gesture)
-                    print "  Swipe id: %d, state: %s, position: %s, direction: %s, speed: %f" % (
-                            gesture.id, self.state_names[gesture.state],
-                            swipe.position, swipe.direction, swipe.speed)
+                    #only track the swipe of 1 finger, not all
+                    if swipe.pointable == frame.pointables.frontmost:
+                        if gesture.state == Leap.Gesture.STATE_START: #self.state_names[gesture.state] == 'STATE_START':
+                            pass#print "\nSTART"
+
+                            #swipe_rec = []
+                        elif gesture.state == Leap.Gesture.STATE_UPDATE: #self.state_names[gesture.state] == 'STATE_UPDATE':
+                            #print "\nUPDATE"
+                            swipe_rec.append( swipe.direction )
+                        elif gesture.state == Leap.Gesture.STATE_STOP: #self.state_names[gesture.state] == 'STATE_END':
+
+                            # work out type of gesture based on average xy movement
+                            ax = ay = az = 0
+                            i = 0
+                            for vec in swipe_rec:
+                                #print vec
+                                ax += vec.x
+                                ay += vec.y
+                                az += vec.z
+                                i += 1
+                            if i > 0:
+                                ax /= i
+                                ay /= i
+                                az /= i
+
+                            if abs(ax) > abs(ay): #abs(ay) < 0.5 and abs(ax) > 0.5:
+
+                                print "  Swipe id: %d, state: %s, position: %s, direction: %s, speed: %f (pointable: %s)" % (
+                                        gesture.id, self.state_names[gesture.state],
+                                        swipe.position, swipe.direction, swipe.speed, swipe.pointable)
+                                if swipe.direction.x > 0:
+                                    print "\nRIGHT SWIPE"
+                                else:
+                                    print "\nLEFT SWIPE"
+
+
+                                print "\n\nx: %.2f, y: %.2f, z: %.2f\n\n" % (ax, ay, az)
+                                swipe_rec = []
+
+                            else:
+                                pass #print "ax: %.2f, ay: %.2f" % (ax, ay)
+
+
+                        elif gesture.state == Leap.Gesture.STATE_INVALID:
+                            print "\nINVALID\n"
+                        else:
+                            print "unknown: %s" % self.state_names[gesture.state]
 
                 if gesture.type == Leap.Gesture.TYPE_KEY_TAP:
-                    keytap = KeyTapGesture(gesture)
-                    print "  Key Tap id: %d, %s, position: %s, direction: %s" % (
-                            gesture.id, self.state_names[gesture.state],
-                            keytap.position, keytap.direction )
+                    if gesture.state == Leap.Gesture.STATE_STOP:
+                        keytap = KeyTapGesture(gesture)
+                        # if  keytap.pointable == frame.pointables.frontmost:
+                        print "  Key Tap id: %d, %s, position: %s, direction: %s" % (
+                                gesture.id, self.state_names[gesture.state],
+                                keytap.position, keytap.direction )
+                        print keytap.pointable
 
                 if gesture.type == Leap.Gesture.TYPE_SCREEN_TAP:
                     screentap = ScreenTapGesture(gesture)
@@ -519,6 +670,11 @@ def send_sonicpi_code(args):
         print ex
 
 
+def setmode(mode):
+    global play_mode
+    play_mode = mode
+    print "\r\nMODE = %d" % mode
+
 def main():
 
     # set up controller and listener
@@ -558,9 +714,13 @@ def main():
         elif char == '8':
             setchan(15, "Double Bass piz.")
         elif char == '9':
-            setchan(16, "Viola sus.")
+            setchan(1, "Viola sus.")
         elif char == '0':
             setchan(0, "Drum's")
+
+        elif char == 'm':
+
+            setmode(not play_mode)
 
 if __name__ == "__main__":
     main()
