@@ -35,9 +35,11 @@ src_dir = os.path.dirname(inspect.getfile(inspect.currentframe()))
 arch_dir = '../lib/x64' if sys.maxsize > 2**32 else '../lib/x86'
 sys.path.insert(0, os.path.abspath(os.path.join(src_dir, arch_dir)))
 import Leap
-from Leap import CircleGesture, KeyTapGesture, ScreenTapGesture, SwipeGesture
+from Leap import CircleGesture, KeyTapGesture, ScreenTapGesture, SwipeGesture, Bone
 
 from threading import Timer
+import threading
+import Queue
 
 import socket, OSC
 
@@ -50,6 +52,10 @@ from rtmidi.midiutil import open_midiport
 from rtmidi.midiconstants import *
 
 from numpy import interp
+
+# import pygame
+# pygame.init()
+# pygame.display.set_mode()
 
 # Sonic PI only accepts OSC connections from the same machine, i.e. localhost
 send_address_pi = 'localhost',  4557
@@ -72,10 +78,12 @@ play_mode = ALLFINGER_MODE #ONEFINGER_MODE
 # this assumes Hydrogen as our drum machine, but which channel depends on your setup
 DRUM_CHANNEL = 0
 
-DEBUG = 1
+DEBUG = 0
+if DEBUG:
+    import pdb
 
-FINGER_VELOCITY_Y = -500
-FINGER_VELOCITY_RANGE = [500, 900]
+FINGER_VELOCITY_Y = -600
+FINGER_VELOCITY_RANGE = [600, 1000]
 
 PLANEY = 200.0                  # Note trigger Y plane height
 PLANEY_SILENCE = PLANEY + 80.0  # Y height which hand must cross in upward motion, to trigger silence
@@ -101,9 +109,24 @@ hands_last_note = [ [0] * 5, [0] * 5 ]              # track last note played by 
 hands_note_ypos = [ [0] * 5, [0] * 5 ]              # y pos at last note play (to check if re-crossed)
 hands_note_time = [ [0] * 5, [0] * 5 ]              # time last note played for each finger
 
+hands_finger_bend = [ [0] * 5, [0] * 5 ]            # amount of bend for each finger
+
 last_note =  {} #{'note': 0, 'x': 0, 'y': 0, 'z':0, 'finger': 0}
 
 swipe_rec = []
+
+loops = []
+loop_counter = 0
+current_rec_loop = []
+
+REC_OFF = 0
+REC_ON = 1
+REC_UPDATE = 2
+REC_STOP = 3
+
+rec_state = REC_OFF
+
+record_queue = Queue.Queue()
 
 # setup MIDI
 midiout = rtmidi.MidiOut()
@@ -278,7 +301,7 @@ class SampleListener(Leap.Listener):
 
     def on_frame(self, controller):
 
-        global last_silence_time, note, swipe_rec, panmidi, last_note
+        global last_silence_time, note, swipe_rec, panmidi, last_note, rec_state
 
         frame = controller.frame()
 
@@ -324,10 +347,27 @@ class SampleListener(Leap.Listener):
             # - using this for note 'hold'
             pinch = pointable.hand.pinch_strength
 
+            if handid == LEFT:
+                if pinch > 0.9:
+                    rec_state = REC_ON
+                else:
+                    rec_state = REC_OFF
+
+
             # grab is a float from 0 to 1 for how much the whole hand is closed into a fist
             # - using this to play notes of shorter duration
             grab = pointable.hand.grab_strength
 
+
+
+            # hands_finger_bend[handid][fingerid] = finger_bend( Leap.Finger(pointable) )
+
+            # if True: #fingerid == 1:
+            #     sys.stdout.write("\r%.2f    %.2f    %.2f    %.2f   %.2f "
+            #     % (hands_finger_bend[handid][0], hands_finger_bend[handid][1], hands_finger_bend[handid][2], hands_finger_bend[handid][3], hands_finger_bend[handid][4]))
+            #     #sys.stdout.write("\rPLAY [%d][%d] %.2f (%d : v=%d) Z = %.2f sc: %s ; p = %.2f, g = %.2f touch = %.2f"
+            #     #% (handid, fingerid, fingervel.y, note, vel, fingerpos.z, scale_names[scale_change], pinch, grab, pointable.touch_distance  ))
+            #     sys.stdout.flush()
 
             # PLAY NOTE ON 'PLANEY' THRESHOLD CROSS
             # but only if the finger was previously above the threshold
@@ -346,8 +386,8 @@ class SampleListener(Leap.Listener):
 
                 # velocity-based play! easier! no absolute Y plane to pass! Y-plane is per-finger per per-note
 
-                if fingervel.y < FINGER_VELOCITY_Y and (hands_crossed_plane[handid][fingerid] == False
-                                                        or time.time() - hands_note_time[handid][fingerid] > 0.2 ):
+                if fingervel.y < FINGER_VELOCITY_Y and time.time() - last_silence_time > 0.2 and (
+                hands_crossed_plane[handid][fingerid] == False or time.time() - hands_note_time[handid][fingerid] > 0.2 ):
 
                     # print "play!"
                     hands_note_time[handid][fingerid] = time.time()
@@ -381,15 +421,26 @@ class SampleListener(Leap.Listener):
                         % (handid, fingerid, fingervel.y, note, vel, fingerpos.z, scale_names[scale_change], pinch, grab, pointable.touch_distance  ))
                         sys.stdout.flush()
 
+                    # this works but doesn't give a smooth slide between notes TODO: check docs
+                    if channel == 14 and note != last_note['note']:
+                        #hands_last_note[handid][fingerid]
+                        print "(sil)"
+                        # midiout.send_message([0x80 + channel, note, 0]) #noteoff to create continuous movement
+                        noteoff(last_note['note'], 0x90 + channel)
+
                     midiout.send_message([ 0x90 + channel, note, vel ])
 
                     if grab > 0.5:
                         dur = (1 - grab) * 2
                         Timer(dur, noteoff, [ note, 0x90 + channel] ).start()
+                    else:
+                        dur = 0
 
+                    last_note = {'note': note, 'channel': channel, 'vel': vel, 'dur': dur, 'pan': panmidi, 'x': fingerpos.x, 'y': fingerpos.y, 'z':fingerpos.z, 'finger': pointable}
 
-                    last_note = {'note': note, 'x': fingerpos.x, 'y': fingerpos.y, 'z':fingerpos.z, 'finger': pointable}
-
+                    if rec_state == REC_ON:
+                        print "\r\nPUT\r\n", last_note
+                        record_queue.put(last_note, False)
 
 
             elif hands_crossed_plane[handid][fingerid] == False and fingerpos.y <= PLANEY: # and fingervel.y < 0.0:
@@ -640,6 +691,15 @@ class SampleListener(Leap.Listener):
             return "STATE_INVALID"
 
 
+# calculate degree of bend of finger using dot product of two bones
+# returns: float indicating 'bentness' of finger: 1.0 is straight, 0.0 is fully curled
+# ( https://community.leapmotion.com/t/measure-the-bending-finger-in-leap-motion-c/1036/8 )
+def finger_bend( finger ):
+    proximal = finger.bone(Bone.TYPE_PROXIMAL)
+    distal = finger.bone(Bone.TYPE_DISTAL)
+    dot = proximal.direction.dot(distal.direction)
+    return 1.0 - (1.0 + dot) / 2.0;
+
 # change MIDI channel, i.e. instrument
 def setchan(ch, label):
     global channel
@@ -675,6 +735,59 @@ def setmode(mode):
     play_mode = mode
     print "\r\nMODE = %d" % mode
 
+
+def looper(rec_queue, controller):
+    global hands_last_note, loop_counter
+    rec_last = REC_OFF
+    tick = 0
+    TICK_LENGTH = 0.1 # 100ms
+    print "looper() start"
+
+    while True:
+
+        # print rec_state
+
+        if rec_state == REC_ON and rec_state != rec_last:
+            # just started recording
+            print "\r\nREC start"
+            rec_last = rec_state
+            current_rec_loop = []
+        elif  rec_state == REC_OFF and rec_state != rec_last:
+            # just stopped recording
+            print "\r\nREC stop"
+
+            loops.append(current_rec_loop)
+
+            rec_last = rec_state
+
+
+        # print "looper()"
+
+        #
+        # sys.stdout.write("\rrec: %d    last %d" % (rec_state, rec_last))   #("\rPLAY [%d][%d] %.2f (%d : v=%d) Z = %.2f sc: %s ; p = %.2f, g = %.2f touch = %.2f"
+        # # % (handid, fingerid, fingervel.y, note, vel, fingerpos.z, scale_names[scale_change], pinch, grab, pointable.touch_distance  ))
+        # sys.stdout.flush()
+        try:
+            note = rec_queue.get(False)
+
+            current_rec_loop.append(note)
+            print "\r\nev", ev
+
+        except Queue.Empty:
+           ev = None
+
+        time.sleep(0.01)
+
+
+        # while interval < TICK_LENGTH:
+        #     time.sleep(0.01)
+
+        # or
+
+        # if(time_since_last_tick >= TICK_LENGTH):
+        #     tick += 1
+
+
 def main():
 
     # set up controller and listener
@@ -684,11 +797,24 @@ def main():
     # Have the sample listener receive events from the controller
     controller.add_listener(listener)
 
+    # basically need a thread to do looping here only because of the blocking keyboard input in main()
+    t = threading.Thread(target=looper, args=(record_queue, controller) )#, args = (q,u))
+    t.daemon = True
+    t.start()
+
     # Keep this process running until Enter or space or ctrl+c is pressed
     print "Press Enter or Ctrl+C to quit."
     print "Press 1 to 0 to change instruments..."
     # try:
     while True:
+        # print "l"
+        # for event in pygame.event.get():
+        #     if event.type == pygame.QUIT:
+        #         pygame.quit(); #sys.exit() if sys is imported
+        #     if event.type == pygame.KEYDOWN:
+        #         if event.key == pygame.K_0:
+        #             print("Hey, you pressed the key, '0'!")
+
         print ""
         char = readchar.readkey()
         if char == '\r' or char == ' ' or char == '\x03':
@@ -710,7 +836,7 @@ def main():
         elif char == '6':
             setchan(8, "Acoustic Guitar")
         elif char == '7':
-            setchan(7, "Strings (sustained)")
+            setchan(4, "Strings (sustained)")
         elif char == '8':
             setchan(15, "Double Bass piz.")
         elif char == '9':
