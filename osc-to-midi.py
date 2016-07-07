@@ -70,9 +70,21 @@ receive_address = '', 1122  # don't care about destination address of incoming m
 
 
 # MIDI port init
-midiout = rtmidi.MidiOut()
-available_ports = midiout.get_ports()
-midiout.open_virtual_port("Sonic Pi output")
+
+USE_MULTIPLE_MIDI_PORTS = True
+
+if USE_MULTIPLE_MIDI_PORTS:
+    midiout = []
+    midiout.append( rtmidi.MidiOut() )
+    # available_ports = midiout.get_ports()
+    midiout[0].open_virtual_port("Sonic Pi output 0")
+    midiout.append( rtmidi.MidiOut() )
+    midiout[1].open_virtual_port("Sonic Pi output 1")
+    print(midiout)
+else:
+    midiout = rtmidi.MidiOut()
+    # available_ports = midiout.get_ports()
+    midiout.open_virtual_port("Sonic Pi output")
 
 
 
@@ -81,7 +93,7 @@ if len(sys.argv) > 1:
     # test sending things when arg is set
     while True:
         print "play"
-        midiout.send_message([ 0x90 + int(sys.argv[1]), 60, 80 ]) #minst, int(zmag)])
+        midiout[1].send_message([ 0x90 + int(sys.argv[1]), 80, 80 ]) #minst, int(zmag)])
         time.sleep(2)
 
 
@@ -108,8 +120,17 @@ def send_osc(args):
 #         print ex
 #
 
-def noteoff(note, chan):
-    midiout.send_message([ chan, note, 0])
+def noteoff(note, port, chan):
+
+    if USE_MULTIPLE_MIDI_PORTS:
+        if port < len(midiout):
+            midiport = midiout[port]
+        else:
+            midiport = midiout[0]
+    else:
+        midiport = midiout
+
+    midiport.send_message([ chan, note, 0])
     # print("note: " + str(note))
 
 
@@ -123,41 +144,61 @@ def cue_handler(addr, tags, stuff, source):
 
 def note_handler(addr, tags, stuff, source):
 
-    # [0, 1, 2, 3, *4] = note, vel, channel, pan, optional duration
-    print stuff
+    #### [0, 1, 2, 3, *4] = note, vel, channel, pan, optional duration
+    # [0, 1, 2, 3, 4, 5, 6] = note, vel, port, channel, pan, optional duration
 
-    chan = stuff[2] - 1  #adjust channel to fit expected LinuxSampler setup
-    note = stuff[0]
+    (note, vel, port, chan, pan, dur, keyswitch) = stuff
+
+    print (note, vel, port, chan, pan, dur, keyswitch)
+
+    chan -= 1  #adjust channel to fit expected LinuxSampler setup
+
+    if USE_MULTIPLE_MIDI_PORTS:
+        if port < len(midiout):
+            midiport = midiout[port]
+        else:
+            midiport = midiout[0]
+    else:
+        midiport = midiout
+
 
     if note == 0:
         print("pedal")
-        midiout.send_message([0xb0 + chan, 123, 0])
+        midiport.send_message([0xb0 + chan, 123, 0])  # CC 123 = silence
         return
 
-    if len(stuff) == 5:
-        dur = stuff[4]
-    else:
-        dur = 1.0
+    # if len(stuff) == 5:
+    #     dur = stuff[4]
+    # else:
+    #     dur = 1.0
 
-
-    panmidi = int( interp(stuff[3], [-1, 1],[0, 127]) )
-    velocity = int( interp(stuff[1], [0, 1],[0, 127]) )
+    panmidi = int( interp(pan, [-1, 1],[0, 127]) )
+    velocity = int( interp(vel, [0, 1],[0, 127]) )
     if velocity > 127:
         velocity = 127
 
-    #print("pan: " + str(panmidi))
+    #print("pan: " + str(panmidi)
+
+
+    if keyswitch >= 0:
+        print "keyswitch %d" % keyswitch, [0x90 + chan, keyswitch, 1]  # MUST BE 1!
+        midiport.send_message( [0x90 + chan, keyswitch, 1])   # NoteOn for keyswitch (select instrument articulation)
 
     # undocumented NRPN per-note panning for LinuxSampler:
     #1: CC 99, value 28
     #2: CC 98, note value 1-127
     #3: CC 06, pan value 1-127 (127 is full left?)
-    midiout.send_message([ 176 + chan, 99, 28 ])
-    midiout.send_message([ 176 + chan, 98, note ])
-    midiout.send_message([ 176 + chan, 06, panmidi ])
 
-    midiout.send_message([ 0x90 + chan, note, velocity ]) #minst, int(zmag)])
+    midiport.send_message([ 176 + chan, 99, 28 ])
+    midiport.send_message([ 176 + chan, 98, note ])
+    midiport.send_message([ 176 + chan, 06, panmidi ])
+
+    # note
+    midiport.send_message([ 0x90 + chan, note, velocity ]) #minst, int(zmag)])
+
+    # set release
     if dur >= 0:
-        Timer(dur, noteoff, [ note, 0x90 + chan] ).start()
+        Timer(dur, noteoff, [ note, port,  0x90 + chan] ).start()
         # offtimer[played_notes].start()
 
 def default_handler(addr, tags, stuff, source):
@@ -221,7 +262,7 @@ try :
             #print x, y
             if x != lastx or y != lasty:
                 # pdb.set_trace()
-                send_osc("set_sched_ahead_time! 0.01; @mousex = %.4f ; @mousey = %.4f" % (x, y))
+                send_osc("@mousex = %.4f ; @mousey = %.4f" % (x, y))
                 lastx = x
                 lasty = y
             time.sleep(0.001)
