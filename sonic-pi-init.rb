@@ -143,6 +143,12 @@ end
 @mousex = 0
 @mousey = 0
 
+@leap_x = 0
+@leap_y = 0
+@leap_z = 0
+@leap_roll = 0
+@leap_pinch = 0
+
 def mx(*args)
   case args.length
   when 0

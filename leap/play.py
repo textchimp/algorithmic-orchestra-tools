@@ -53,6 +53,11 @@ from rtmidi.midiconstants import *
 
 from numpy import interp
 
+
+ALLFINGER_MODE = 0
+ONEFINGER_MODE = 1
+play_mode = ALLFINGER_MODE #ONEFINGER_MODE
+
 # import pygame
 # pygame.init()
 # pygame.display.set_mode()
@@ -60,6 +65,25 @@ from numpy import interp
 # Sonic PI only accepts OSC connections from the same machine, i.e. localhost
 send_address_pi = 'localhost',  4557
 USE_OSC = False
+
+if USE_OSC:
+    # temporary assumption that we only want to send one finger's data to Sonic Pi
+    play_mode = ONEFINGER_MODE
+
+
+send_address_browser = 'localhost',  57121
+BROWSER_OSC = False #True
+
+if BROWSER_OSC:
+    # temporary assumption that we only want to send one finger's data to Sonic Pi
+    play_mode = ONEFINGER_MODE
+
+#
+# if len(sys.argv) > 1:
+#     # minst = int(sys.argv[1])
+#     # # print minst
+#     SEND_SONIC = True
+
 
 # default MIDI channel, i.e. instrument
 # you will need to change this depending on your sampler setup
@@ -70,10 +94,6 @@ channel = 2
 current_scale = 0
 current_key = 0
 
-ALLFINGER_MODE = 0
-ONEFINGER_MODE = 1
-play_mode = ALLFINGER_MODE #ONEFINGER_MODE
-
 # we do specific note calculation for drum sequencer:
 # this assumes Hydrogen as our drum machine, but which channel depends on your setup
 DRUM_CHANNEL = 0
@@ -81,6 +101,7 @@ DRUM_CHANNEL = 0
 DEBUG = 0
 if DEBUG:
     import pdb
+
 
 FINGER_VELOCITY_Y = -600
 FINGER_VELOCITY_RANGE = [600, 1000]
@@ -147,6 +168,14 @@ if USE_OSC:
         print("ERROR: no connection to Sonic Pi OSC server")
         USE_OSC = False
 
+
+if BROWSER_OSC:
+    browser = OSC.OSCClient()
+    try:
+        browser.connect(send_address_browser)
+    except:
+        print("ERROR: no connection to browser/websockets server")
+        BROWSER_OSC = False
 
 # Scale definitions
 
@@ -354,6 +383,26 @@ class SampleListener(Leap.Listener):
                     rec_state = REC_OFF
 
 
+            if USE_OSC:
+                # print "y: %.2f\r\n" % (interp(fingerpos.z, [-200, 200], [1, 0]))
+                # TODO: some time-based throttling here
+                send_sonicpi_code( "@leap_x = %.4f; @leap_y = %.4f;  @leap_z = %.4f; @leap_pinch = %.4f" %
+                (interp(fingerpos.x, [-250, 250], [0, 1]),
+                interp(fingerpos.y, [20, 700], [0, 1]),    # all these xyz ranges arrived at by observation/trial&error
+                interp(fingerpos.z, [-200, 200], [1, 0]),
+                pinch))
+                # could use [200, -350] for Z... but range gets lower as hand gets closer to sensor
+
+            if BROWSER_OSC:
+                # print "y: %.2f\r\n" % (interp(fingerpos.z, [-200, 200], [1, 0]))
+                # TODO: some time-based throttling here
+                # send_sonicpi_code( "@leap_x = %.4f; @leap_y = %.4f;  @leap_z = %.4f; @leap_pinch = %.4f" %
+                send_browser_osc([
+                 interp(fingerpos.x, [-100, 100], [0, 1]),
+                 interp(fingerpos.y, [20, 400], [0, 1]),
+                 interp(fingerpos.z, [-200, 200], [1, 0]), pinch
+                ])
+
             # grab is a float from 0 to 1 for how much the whole hand is closed into a fist
             # - using this to play notes of shorter duration
             grab = pointable.hand.grab_strength
@@ -438,9 +487,10 @@ class SampleListener(Leap.Listener):
 
                     last_note = {'note': note, 'channel': channel, 'vel': vel, 'dur': dur, 'pan': panmidi, 'x': fingerpos.x, 'y': fingerpos.y, 'z':fingerpos.z, 'finger': pointable}
 
-                    if rec_state == REC_ON:
-                        print "\r\nPUT\r\n", last_note
-                        record_queue.put(last_note, False)
+                    # commented for DEMO
+                    # if rec_state == REC_ON:
+                    #     print "\r\nPUT\r\n", last_note
+                    #     record_queue.put(last_note, False)
 
 
             elif hands_crossed_plane[handid][fingerid] == False and fingerpos.y <= PLANEY: # and fingervel.y < 0.0:
@@ -532,6 +582,10 @@ class SampleListener(Leap.Listener):
             roll = 180.0 * palm_normal.roll / math.pi
             panmidi = interp(roll, [-90, 90], [1, 127])
 
+            if USE_OSC:
+                send_sonicpi_code( "@leap_roll = %.4f;" % ( interp(roll, [-90, 90], [1, 0]) ) )
+
+
             # sys.stdout.write("\rnorm: %.2f" % (interp(roll, [-90, 90], [-1.0, 1.0])))
             # sys.stdout.flush()
 
@@ -544,137 +598,137 @@ class SampleListener(Leap.Listener):
                     last_silence_time =  time.time()
 
             # examples of hand values, not used (from SDK Sample.py)
-            if False:
-                handType = "Left hand" if hand.is_left else "Right hand"
-
-                print "  %s, id %d, position: %s" % (
-                    handType, hand.id, hand.palm_position)
-
-                # Get the hand's normal vector and direction
-                normal = hand.palm_normal
-                direction = hand.direction
-
-                # Calculate the hand's pitch, roll, and yaw angles
-                print "  pitch: %f degrees, roll: %f degrees, yaw: %f degrees" % (
-                    direction.pitch * Leap.RAD_TO_DEG,
-                    normal.roll * Leap.RAD_TO_DEG,
-                    direction.yaw * Leap.RAD_TO_DEG)
-
-                # Get arm bone
-                arm = hand.arm
-                print "  Arm direction: %s, wrist position: %s, elbow position: %s" % (
-                    arm.direction,
-                    arm.wrist_position,
-                    arm.elbow_position)
-
-                # Get fingers
-                for finger in hand.fingers:
-
-                    print "    %s finger, id: %d, length: %fmm, width: %fmm" % (
-                        self.finger_names[finger.type],
-                        finger.id,
-                        finger.length,
-                        finger.width)
-
-                    # Get bones
-                    for b in range(0, 4):
-                        bone = finger.bone(b)
-                        print "      Bone: %s, start: %s, end: %s, direction: %s" % (
-                            self.bone_names[bone.type],
-                            bone.prev_joint,
-                            bone.next_joint,
-                            bone.direction)
-
+            # if False:
+            #     handType = "Left hand" if hand.is_left else "Right hand"
+            #
+            #     print "  %s, id %d, position: %s" % (
+            #         handType, hand.id, hand.palm_position)
+            #
+            #     # Get the hand's normal vector and direction
+            #     normal = hand.palm_normal
+            #     direction = hand.direction
+            #
+            #     # Calculate the hand's pitch, roll, and yaw angles
+            #     print "  pitch: %f degrees, roll: %f degrees, yaw: %f degrees" % (
+            #         direction.pitch * Leap.RAD_TO_DEG,
+            #         normal.roll * Leap.RAD_TO_DEG,
+            #         direction.yaw * Leap.RAD_TO_DEG)
+            #
+            #     # Get arm bone
+            #     arm = hand.arm
+            #     print "  Arm direction: %s, wrist position: %s, elbow position: %s" % (
+            #         arm.direction,
+            #         arm.wrist_position,
+            #         arm.elbow_position)
+            #
+            #     # Get fingers
+            #     for finger in hand.fingers:
+            #
+            #         print "    %s finger, id: %d, length: %fmm, width: %fmm" % (
+            #             self.finger_names[finger.type],
+            #             finger.id,
+            #             finger.length,
+            #             finger.width)
+            #
+            #         # Get bones
+            #         for b in range(0, 4):
+            #             bone = finger.bone(b)
+            #             print "      Bone: %s, start: %s, end: %s, direction: %s" % (
+            #                 self.bone_names[bone.type],
+            #                 bone.prev_joint,
+            #                 bone.next_joint,
+            #                 bone.direction)
+            #
 
         # Get gestures - not using these yet (from SDK Sample.py)
-        if True:
-            for gesture in frame.gestures():
-
-                #if self.state_names[gesture.state] == 'STATE_END':
-
-                if gesture.type == Leap.Gesture.TYPE_CIRCLE:
-                    circle = CircleGesture(gesture)
-
-                    # Determine clock direction using the angle between the pointable and the circle normal
-                    if circle.pointable.direction.angle_to(circle.normal) <= Leap.PI/2:
-                        clockwiseness = "clockwise"
-                    else:
-                        clockwiseness = "counterclockwise"
-
-                    # Calculate the angle swept since the last frame
-                    swept_angle = 0
-                    if circle.state != Leap.Gesture.STATE_START:
-                        previous_update = CircleGesture(controller.frame(1).gesture(circle.id))
-                        swept_angle =  (circle.progress - previous_update.progress) * 2 * Leap.PI
-
-                    print "  Circle id: %d, %s, progress: %f, radius: %f, angle: %f degrees, %s" % (
-                            gesture.id, self.state_names[gesture.state],
-                            circle.progress, circle.radius, swept_angle * Leap.RAD_TO_DEG, clockwiseness)
-
-                if gesture.type == Leap.Gesture.TYPE_SWIPE:
-                    swipe = SwipeGesture(gesture)
-                    #only track the swipe of 1 finger, not all
-                    if swipe.pointable == frame.pointables.frontmost:
-                        if gesture.state == Leap.Gesture.STATE_START: #self.state_names[gesture.state] == 'STATE_START':
-                            pass#print "\nSTART"
-
-                            #swipe_rec = []
-                        elif gesture.state == Leap.Gesture.STATE_UPDATE: #self.state_names[gesture.state] == 'STATE_UPDATE':
-                            #print "\nUPDATE"
-                            swipe_rec.append( swipe.direction )
-                        elif gesture.state == Leap.Gesture.STATE_STOP: #self.state_names[gesture.state] == 'STATE_END':
-
-                            # work out type of gesture based on average xy movement
-                            ax = ay = az = 0
-                            i = 0
-                            for vec in swipe_rec:
-                                #print vec
-                                ax += vec.x
-                                ay += vec.y
-                                az += vec.z
-                                i += 1
-                            if i > 0:
-                                ax /= i
-                                ay /= i
-                                az /= i
-
-                            if abs(ax) > abs(ay): #abs(ay) < 0.5 and abs(ax) > 0.5:
-
-                                print "  Swipe id: %d, state: %s, position: %s, direction: %s, speed: %f (pointable: %s)" % (
-                                        gesture.id, self.state_names[gesture.state],
-                                        swipe.position, swipe.direction, swipe.speed, swipe.pointable)
-                                if swipe.direction.x > 0:
-                                    print "\nRIGHT SWIPE"
-                                else:
-                                    print "\nLEFT SWIPE"
-
-
-                                print "\n\nx: %.2f, y: %.2f, z: %.2f\n\n" % (ax, ay, az)
-                                swipe_rec = []
-
-                            else:
-                                pass #print "ax: %.2f, ay: %.2f" % (ax, ay)
-
-
-                        elif gesture.state == Leap.Gesture.STATE_INVALID:
-                            print "\nINVALID\n"
-                        else:
-                            print "unknown: %s" % self.state_names[gesture.state]
-
-                if gesture.type == Leap.Gesture.TYPE_KEY_TAP:
-                    if gesture.state == Leap.Gesture.STATE_STOP:
-                        keytap = KeyTapGesture(gesture)
-                        # if  keytap.pointable == frame.pointables.frontmost:
-                        print "  Key Tap id: %d, %s, position: %s, direction: %s" % (
-                                gesture.id, self.state_names[gesture.state],
-                                keytap.position, keytap.direction )
-                        print keytap.pointable
-
-                if gesture.type == Leap.Gesture.TYPE_SCREEN_TAP:
-                    screentap = ScreenTapGesture(gesture)
-                    print "  Screen Tap id: %d, %s, position: %s, direction: %s" % (
-                            gesture.id, self.state_names[gesture.state],
-                            screentap.position, screentap.direction )
+        # if True:
+        #     for gesture in frame.gestures():
+        #
+        #         #if self.state_names[gesture.state] == 'STATE_END':
+        #
+        #         if gesture.type == Leap.Gesture.TYPE_CIRCLE:
+        #             circle = CircleGesture(gesture)
+        #
+        #             # Determine clock direction using the angle between the pointable and the circle normal
+        #             if circle.pointable.direction.angle_to(circle.normal) <= Leap.PI/2:
+        #                 clockwiseness = "clockwise"
+        #             else:
+        #                 clockwiseness = "counterclockwise"
+        #
+        #             # Calculate the angle swept since the last frame
+        #             swept_angle = 0
+        #             if circle.state != Leap.Gesture.STATE_START:
+        #                 previous_update = CircleGesture(controller.frame(1).gesture(circle.id))
+        #                 swept_angle =  (circle.progress - previous_update.progress) * 2 * Leap.PI
+        #
+        #             print "  Circle id: %d, %s, progress: %f, radius: %f, angle: %f degrees, %s" % (
+        #                     gesture.id, self.state_names[gesture.state],
+        #                     circle.progress, circle.radius, swept_angle * Leap.RAD_TO_DEG, clockwiseness)
+        #
+        #         if gesture.type == Leap.Gesture.TYPE_SWIPE:
+        #             swipe = SwipeGesture(gesture)
+        #             #only track the swipe of 1 finger, not all
+        #             if swipe.pointable == frame.pointables.frontmost:
+        #                 if gesture.state == Leap.Gesture.STATE_START: #self.state_names[gesture.state] == 'STATE_START':
+        #                     pass#print "\nSTART"
+        #
+        #                     #swipe_rec = []
+        #                 elif gesture.state == Leap.Gesture.STATE_UPDATE: #self.state_names[gesture.state] == 'STATE_UPDATE':
+        #                     #print "\nUPDATE"
+        #                     swipe_rec.append( swipe.direction )
+        #                 elif gesture.state == Leap.Gesture.STATE_STOP: #self.state_names[gesture.state] == 'STATE_END':
+        #
+        #                     # work out type of gesture based on average xy movement
+        #                     ax = ay = az = 0
+        #                     i = 0
+        #                     for vec in swipe_rec:
+        #                         #print vec
+        #                         ax += vec.x
+        #                         ay += vec.y
+        #                         az += vec.z
+        #                         i += 1
+        #                     if i > 0:
+        #                         ax /= i
+        #                         ay /= i
+        #                         az /= i
+        #
+        #                     if abs(ax) > abs(ay): #abs(ay) < 0.5 and abs(ax) > 0.5:
+        #
+        #                         print "  Swipe id: %d, state: %s, position: %s, direction: %s, speed: %f (pointable: %s)" % (
+        #                                 gesture.id, self.state_names[gesture.state],
+        #                                 swipe.position, swipe.direction, swipe.speed, swipe.pointable)
+        #                         if swipe.direction.x > 0:
+        #                             print "\nRIGHT SWIPE"
+        #                         else:
+        #                             print "\nLEFT SWIPE"
+        #
+        #
+        #                         print "\n\nx: %.2f, y: %.2f, z: %.2f\n\n" % (ax, ay, az)
+        #                         swipe_rec = []
+        #
+        #                     else:
+        #                         pass #print "ax: %.2f, ay: %.2f" % (ax, ay)
+        #
+        #
+        #                 elif gesture.state == Leap.Gesture.STATE_INVALID:
+        #                     print "\nINVALID\n"
+        #                 else:
+        #                     print "unknown: %s" % self.state_names[gesture.state]
+        #
+        #         if gesture.type == Leap.Gesture.TYPE_KEY_TAP:
+        #             if gesture.state == Leap.Gesture.STATE_STOP:
+        #                 keytap = KeyTapGesture(gesture)
+        #                 # if  keytap.pointable == frame.pointables.frontmost:
+        #                 print "  Key Tap id: %d, %s, position: %s, direction: %s" % (
+        #                         gesture.id, self.state_names[gesture.state],
+        #                         keytap.position, keytap.direction )
+        #                 print keytap.pointable
+        #
+        #         if gesture.type == Leap.Gesture.TYPE_SCREEN_TAP:
+        #             screentap = ScreenTapGesture(gesture)
+        #             print "  Screen Tap id: %d, %s, position: %s, direction: %s" % (
+        #                     gesture.id, self.state_names[gesture.state],
+        #                     screentap.position, screentap.direction )
 
 
     def state_string(self, state):
@@ -718,6 +772,18 @@ def silence(chan):
     midiout.send_message([0xb0 + chan, 123, 0])
 
 
+def send_browser_osc(args):
+    try:
+        msg = OSC.OSCMessage("/hand")
+        msg.append([args])
+        browser.send(msg)
+        # pi.send( OSC.OSCMessage("/run-code", [22]) ) # why the fuck does this no longer work?
+        # print "sent " + args
+    except Exception as ex:
+        print ex
+
+
+
 # send code string to sonic pi
 def send_sonicpi_code(args):
     try:
@@ -749,12 +815,12 @@ def looper(rec_queue, controller):
 
         if rec_state == REC_ON and rec_state != rec_last:
             # just started recording
-            print "\r\nREC start"
+            # print "\r\nREC start"
             rec_last = rec_state
             current_rec_loop = []
         elif  rec_state == REC_OFF and rec_state != rec_last:
             # just stopped recording
-            print "\r\nREC stop"
+            # print "\r\nREC stop"
 
             loops.append(current_rec_loop)
 
@@ -822,7 +888,7 @@ def main():
             sys.exit(0)
 
         # the following channel-to-instrument mappings are for my LinuxSampler setup;
-        # yours will probably be different (remember you may need to subtract 1)
+        # yours will probably be different (remember you may need to subtract 1 from the channel shown in Linuxsampler)
         elif char == '1':
             setchan(2, "Piano")
         elif char == '2':
@@ -842,7 +908,7 @@ def main():
         elif char == '9':
             setchan(1, "Viola sus.")
         elif char == '0':
-            setchan(0, "Drum's")
+            setchan(0, "Drums")
 
         elif char == 'm':
 
