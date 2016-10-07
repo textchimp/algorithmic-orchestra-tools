@@ -2,6 +2,8 @@
 #
 # Get OSC messages from Sonic Pi, and resend them as MIDI messages
 #
+# This script also allows the current mouse position to be sent to Sonic Pi, to be used to control any numeric parameter.
+#
 # ZOMG!!! Suddenly all the riches of the Gigastudio sample world is available from Sonic Pi!
 
 # NOTE: You will need the sonic-pi-init.rb in this folder - it will need to be saved as
@@ -12,35 +14,58 @@
 #
 #
 
-# You will need to install the rtmidi Python library, try one of these commands:
+# If you want MIDI output support, you will need to install the rtmidi Python library.
+#  Try one of these commands:
 #
 # $  pip install --pre python-rtmidi
 #
 # $ easy_install python-rtmidi
 #
 # ... and the same fom 'pyosc'
-# ... and 'tkinter' (if you want to add trackpad control support to Sonic Pi)
+# ... and the same for 'tkinter' (if you want to add trackpad/mouse control support to Sonic Pi)
 
-# set this to true to send trackpad X Y values to Sonic Pi via OSC
-SEND_MOUSE = True
+
+
+# set this to true to send trackpad X Y values to Sonic Pi via OSC (or command line option "mouse")
+SEND_MOUSE = False
 
 # set this to true to enable broadcasting of cue triggers over local network to anyone listening
 SEND_CUE_BROADCAST = True
 
+# MIDI off by default, enable on command line ("midi")
+SEND_MIDI = False
+
 import socket, OSC, re, threading, math, time, sys
-import rtmidi
-from rtmidi.midiutil import open_midiport
-from rtmidi.midiconstants import *
 
 from threading import Timer
 
 from numpy import interp
 
-# import pdb
+
+# enable features from command line arguments: midi, mouse
+if len(sys.argv) > 1:
+
+    for arg in sys.argv[1:]:
+        if arg.lower() == "midi":
+            print "Using MIDI."
+            SEND_MIDI = True
+        elif arg.lower() == "mouse":
+            print "Sending mouse position."
+            SEND_MOUSE = True
+
+    # # test sending things when arg is set
+    # while True:
+    #     print "play"
+    #     midiout[1].send_message([ 0x90 + int(sys.argv[1]), 80, 80 ]) #minst, int(zmag)])
+    #     time.sleep(2)
+
+
 
 # this import seems to take a long time... why? how hard is mouse tracking?
 if SEND_MOUSE:
-    # import pymouse
+
+    import Cocoa # for detecting modifier keys held down in OSX
+
     import Tkinter as tk
     # from Tkinter import *
     root = tk.Tk()
@@ -71,30 +96,29 @@ receive_address = '', 1122  # don't care about destination address of incoming m
 
 # MIDI port init
 
-USE_MULTIPLE_MIDI_PORTS = True
+if SEND_MIDI:
 
-if USE_MULTIPLE_MIDI_PORTS:
-    midiout = []
-    midiout.append( rtmidi.MidiOut() )
-    # available_ports = midiout.get_ports()
-    midiout[0].open_virtual_port("Sonic Pi output 0")
-    midiout.append( rtmidi.MidiOut() )
-    midiout[1].open_virtual_port("Sonic Pi output 1")
-    print(midiout)
-else:
-    midiout = rtmidi.MidiOut()
-    # available_ports = midiout.get_ports()
-    midiout.open_virtual_port("Sonic Pi output")
+    # only import if MIDI is enabled
+    import rtmidi
+    from rtmidi.midiutil import open_midiport
+    from rtmidi.midiconstants import *
+
+    USE_MULTIPLE_MIDI_PORTS = True
+
+    if USE_MULTIPLE_MIDI_PORTS:
+        midiout = []
+        midiout.append( rtmidi.MidiOut() )
+        # available_ports = midiout.get_ports()
+        midiout[0].open_virtual_port("Sonic Pi output 0")
+        midiout.append( rtmidi.MidiOut() )
+        midiout[1].open_virtual_port("Sonic Pi output 1")
+        #print(midiout)
+    else:
+        midiout = rtmidi.MidiOut()
+        # available_ports = midiout.get_ports()
+        midiout.open_virtual_port("Sonic Pi output")
 
 
-
-if len(sys.argv) > 1:
-
-    # test sending things when arg is set
-    while True:
-        print "play"
-        midiout[1].send_message([ 0x90 + int(sys.argv[1]), 80, 80 ]) #minst, int(zmag)])
-        time.sleep(2)
 
 
 def send_osc(args):
@@ -120,6 +144,22 @@ def send_osc(args):
 #         print ex
 #
 
+# thanks to: http://stackoverflow.com/questions/7514280/get-modifier-keys-which-have-been-pressed-while-starting-an-app-applescript
+if SEND_MOUSE:
+    def shift_held():
+        # TODO: how to determine left or right key?
+        return (Cocoa.NSEvent.modifierFlags() & Cocoa.NSShiftKeyMask) > 1
+
+    def opt_held():
+        return (Cocoa.NSEvent.modifierFlags() & Cocoa.NSAlternateKeyMask) > 1
+
+    def cmd_held():
+        return (Cocoa.NSEvent.modifierFlags() & Cocoa.NSCommandKeyMask) > 1
+
+    def ctrl_held():
+        return (Cocoa.NSEvent.modifierFlags() & Cocoa.NSControlKeyMask) > 1
+
+
 def noteoff(note, port, chan):
 
     if USE_MULTIPLE_MIDI_PORTS:
@@ -139,8 +179,10 @@ def sendcue_handler(addr, tags, stuff, source):
 
 def cue_handler(addr, tags, stuff, source):
     cue_name = stuff[0]
-    arg = stuff[1]
-    send_osc("set_sched_ahead_time! 0.01; cue :%s, arg0: %s" % (cue_name, arg))
+    count = stuff[1]
+    time = stuff[2]
+    div = stuff[3]
+    send_osc("set_sched_ahead_time! 0.0001; cue :%s, count: %s, time: %s, div: %s;" % (cue_name, count, time, div))
 
 def note_handler(addr, tags, stuff, source):
 
@@ -208,7 +250,8 @@ def default_handler(addr, tags, stuff, source):
 s = OSC.OSCServer(receive_address)
 s.addDefaultHandlers()
 
-s.addMsgHandler("/note", note_handler)
+if SEND_MIDI:
+    s.addMsgHandler("/note", note_handler)
 
 # s.addMsgHandler("/send_cue", sendcue_handler) # broadcast a cue from Sonic Pi on this machine
 
@@ -250,8 +293,8 @@ lasty = 0
 
 
 try :
-    while True:
-        if SEND_MOUSE:
+    if SEND_MOUSE:
+        while True:
             # print mouse.position()
             x = root.winfo_pointerx() / screen_width
             y = root.winfo_pointery() / screen_height
@@ -260,16 +303,19 @@ try :
             if y > 0.999:
                 y = 1.0
             #print x, y
-            if x != lastx or y != lasty:
-                # pdb.set_trace()
+            if shift_held()  and (x != lastx or y != lasty):
+                # # pdb.set_trace()
                 send_osc("@mousex = %.4f ; @mousey = %.4f" % (x, y))
                 lastx = x
                 lasty = y
             time.sleep(0.001)
-        else:
-            time.sleep(1)
+        # else:
+        #     time.sleep(1)
+    else:
+        # wait for a ctrl-c
+        while True:
+            sys.stdin.readline()
 
-    #sys.stdin.readline()
 except KeyboardInterrupt :
     print ("\nClosing OSCServer.")
     s.close()
