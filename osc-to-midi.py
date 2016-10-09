@@ -41,6 +41,16 @@ from threading import Timer
 
 from numpy import interp
 
+send_address_pi = 'localhost',  4557
+pi = OSC.OSCClient()
+try:
+    pi.connect(send_address_pi)
+except:
+    print("ERROR: couldn't connect to sonic pi (port %d)" % (send_address_pi[1]))
+
+receive_address = '', 1122  # don't care about destination address of incoming msg / use default address
+
+
 
 # enable features from command line arguments: midi, mouse
 if len(sys.argv) > 1:
@@ -70,17 +80,6 @@ if SEND_MOUSE:
     # from Tkinter import *
     root = tk.Tk()
     # Sonic PI only accepts OSC connections from the same machine, i.e. localhost
-    send_address_pi = 'localhost',  4557
-    pi = OSC.OSCClient()
-    try:
-        pi.connect(send_address_pi)
-    except:
-        print("ERROR: couldn't connect to sonic pi")
-
-
-
-receive_address = '', 1122  # don't care about destination address of incoming msg / use default address
-
 
 # if SEND_CUE_BROADCAST:
 #     send_address_pi = '192.168.1.255', receive_address[1]
@@ -182,6 +181,7 @@ def cue_handler(addr, tags, stuff, source):
     count = stuff[1]
     time = stuff[2]
     div = stuff[3]
+    print("Net cue: %s, count: %s, time: %s, div: %s" % (cue_name, count, time, div))
     send_osc("set_sched_ahead_time! 0.0001; cue :%s, count: %s, time: %s, div: %s;" % (cue_name, count, time, div))
 
 def note_handler(addr, tags, stuff, source):

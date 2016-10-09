@@ -12,7 +12,7 @@
 #require 'socket'
 
 # need this for our run_code OSC calls to eval as realtime as possible
-set_sched_ahead_time! 0.001
+set_sched_ahead_time! 0.0001
 
 # socket for sending OSC events to osc-to-midi.py server, to translate into MIDI note events
 @oscmidi_socket = UDPSocket.new
@@ -21,18 +21,40 @@ set_sched_ahead_time! 0.001
 
 # socket for sending broacast cue triggers over the network
 @osc_broadcast_socket = UDPSocket.new
-
-# IP address for broadcast will vary from network to network, but should be "inverse of netmask"
-@osc_broadcast_server = '192.168.1.255'
-@osc_broadcast_port = @oscmidi_port
 # need to set this socket as having permission to send broadcast messages
 @osc_broadcast_socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_BROADCAST, true)
 
-# broadcast a cue over the network
-def netcue(*args)
-  @osc_broadcast_socket.send(SonicPi::OSC::OscEncode.new.encode_single_message("/cue", args.map{|a| a.to_s }), 0, @osc_broadcast_server, @osc_broadcast_port)
 
+
+# IP address for broadcast will vary from network to network, but should be "inverse of netmask"
+#
+# @osc_broadcast_server = '192.168.1.255'
+# @osc_broadcast_port = @oscmidi_port
+#
+# broadcast a cue over the network
+# def netcue(*args)
+#   @osc_broadcast_socket.send(SonicPi::OSC::OscEncode.new.encode_single_message("/cue", args.map{|a| a.to_s }), 0, @osc_broadcast_server, @osc_broadcast_port)
+#
+# end
+
+# Newer version, uses Sonic Pi OSC port 4557 directly (no intermediate Python server) but requires 'open: true' arg added to
+# /Applications/Sonic Pi.app/app/server/bin/sonic-pi-server.rb (line 70):
+# osc_server = SonicPi::OSC::UDPServer.new(server_port, use_decoder_cache: true, open: true)
+
+@osc_broadcast_server = '169.254.255.255' # ad-hoc network
+@osc_broadcast_port = 4557
+
+def netcue(name, opts = {})
+  time = opts[:time]   || 0
+  count = opts[:count] || 0
+  div = opts[:div]     || 0
+  @osc_broadcast_socket.send(SonicPi::OSC::OscEncode.new.encode_single_message("/run-code",
+    [0, "cue :#{name}, time: #{time.to_s}, count: #{count.to_s}, div: #{div.to_s}"]), 0, @osc_broadcast_server, @osc_broadcast_port)
 end
+
+
+
+
 
 @last_channel = 0
 
