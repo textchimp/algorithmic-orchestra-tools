@@ -142,6 +142,14 @@ end
 
 @mousex = 0
 @mousey = 0
+@mousex_ctrl = 0
+@mousey_ctrl = 0
+@mousex_shift = 0
+@mousey_shift = 0
+@mousex_cmd = 0
+@mousey_cmd = 0
+@mousex_opt = 0
+@mousey_opt = 0
 
 @leap_x = 0
 @leap_y = 0
@@ -149,27 +157,97 @@ end
 @leap_roll = 0
 @leap_pinch = 0
 
+def get_mousex(mod)
+  case mod
+  when :ctrl
+    @mousex_ctrl
+  when :shift
+    @mousex_shift
+  when :cmd
+    @mousex_cmd
+  when :opt
+    @mousex_opt
+  end
+end
+
+def get_mousey(mod)
+  case mod
+  when :ctrl
+    @mousey_ctrl
+  when :shift
+    @mousey_shift
+  when :cmd
+    @mousey_cmd
+  when :opt
+    @mousey_opt
+  end
+end
+
 def mx(*args)
   case args.length
   when 0
-    @mousex
+    @mousex_shift
   when 1
-    @mousex * args[0]
+    if args[0].is_a? Numeric
+      # range max, assume shift mod by default
+      @mousex_shift * args[0]
+    else
+      # assume symbol, treat as key modifier
+      get_mousex(args[0])
+    end
   when 2
-    @mousex * (args[1] - args[0]) + args[0]
+    if args[0].is_a? Numeric and args[1].is_a? Numeric
+      # two numbers, treat as range
+      @mousex_shift * (args[1] - args[0]) + args[0]
+    elsif args[0].is_a? Numeric
+      # first arg is number (max), second is symbol (key)
+      get_mousex(args[1]) * args[0]
+    end
+  when 3
+    # both min & max args, and also key mod
+    get_mousex(args[2]) * (args[1] - args[0])  +  args[0]
+    # @mousex_shift * (args[1] - args[0]) + args[0]
   end
 end
 
 def my(*args)
   case args.length
   when 0
-    @mousey
+    @mousey_shift
   when 1
-    @mousey * args[0]
+    if args[0].is_a? Numeric
+      # range max, assume shift mod by default
+      @mousey_shift * args[0]
+    else
+      # assume symbol, treat as key modifier
+      get_mousey(args[0])
+    end
   when 2
-    @mousey * (args[1] - args[0]) + args[0]
+    if args[0].is_a? Numeric and args[1].is_a? Numeric
+      # two numbers, treat as range
+      @mousey_shift * (args[1] - args[0]) + args[0]
+    elsif args[0].is_a? Numeric
+      # first arg is number (max), second is symbol (key mod)
+      get_mousey(args[1]) * args[0]
+    end
+  when 3
+    # both min & max args, and also key mod
+    get_mousey(args[2]) * (args[1] - args[0])  +  args[0]
   end
 end
+
+# original version
+#
+# def my(*args)
+#   case args.length
+#   when 0
+#     @mousey_shift
+#   when 1
+#     @mousey_shift * args[0]
+#   when 2
+#     @mousey_shift * (args[1] - args[0]) + args[0]
+#   end
+# end
 
 
 

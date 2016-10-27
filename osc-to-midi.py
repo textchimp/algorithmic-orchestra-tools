@@ -303,11 +303,19 @@ try :
             if y > 0.999:
                 y = 1.0
             #print x, y
-            if shift_held()  and (x != lastx or y != lasty):
-                # # pdb.set_trace()
-                send_osc("@mousex = %.4f ; @mousey = %.4f" % (x, y))
+            if (x != lastx or y != lasty):
+                if shift_held():
+                    send_osc("@mousex_shift = %.4f ; @mousey_shift = %.4f" % (x, y))
+                if cmd_held():
+                    send_osc("@mousex_cmd = %.4f ; @mousey_cmd = %.4f" % (x, y))
+                if opt_held():
+                    send_osc("@mousex_opt = %.4f ; @mousey_opt = %.4f" % (x, y))
+                if ctrl_held():
+                    send_osc("@mousex_ctrl = %.4f ; @mousey_ctrl = %.4f" % (x, y))
+
                 lastx = x
                 lasty = y
+
             time.sleep(0.001)
         # else:
         #     time.sleep(1)
