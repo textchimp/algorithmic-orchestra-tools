@@ -208,6 +208,18 @@ def note_handler(addr, tags, stuff, source):
         print("pedal")
         midiport.send_message([0xb0 + chan, 123, 0])  # CC 123 = silence
         return
+    elif note == 1:
+        print "MIDI clock"
+        midiport.send_message([248 + chan])  # clock
+        return
+    elif note == 2:
+        print "MIDI start"
+        midiport.send_message([250 + chan])  # clock
+        return
+    elif note == 3:
+        print "MIDI stop"
+        midiport.send_message([252 + chan])  # clock
+        return
 
     # if len(stuff) == 5:
     #     dur = stuff[4]
@@ -230,10 +242,12 @@ def note_handler(addr, tags, stuff, source):
     #1: CC 99, value 28
     #2: CC 98, note value 1-127
     #3: CC 06, pan value 1-127 (127 is full left?)
-
-    midiport.send_message([ 176 + chan, 99, 28 ])
-    midiport.send_message([ 176 + chan, 98, note ])
-    midiport.send_message([ 176 + chan, 06, panmidi ])
+    #
+    #
+    # uncomment for LinuxSampler PANNING:
+    # midiport.send_message([ 176 + chan, 99, 28 ])
+    # midiport.send_message([ 176 + chan, 98, note ])
+    # midiport.send_message([ 176 + chan, 06, panmidi ])
 
     # note
     midiport.send_message([ 0x90 + chan, note, velocity ]) #minst, int(zmag)])

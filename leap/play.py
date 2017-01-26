@@ -66,13 +66,17 @@ play_mode = ALLFINGER_MODE #ONEFINGER_MODE
 send_address_pi = 'localhost',  4557
 USE_OSC = False
 
+if len(sys.argv) > 1:
+    USE_OSC = True
+
 if USE_OSC:
     # temporary assumption that we only want to send one finger's data to Sonic Pi
+    print("Using Sonic Pi OSC")
     play_mode = ONEFINGER_MODE
 
 
 send_address_browser = 'localhost',  57121
-BROWSER_OSC = False #True
+BROWSER_OSC = False
 
 if BROWSER_OSC:
     # temporary assumption that we only want to send one finger's data to Sonic Pi
@@ -103,8 +107,8 @@ if DEBUG:
     import pdb
 
 
-FINGER_VELOCITY_Y = -600
-FINGER_VELOCITY_RANGE = [600, 1000]
+FINGER_VELOCITY_Y = -400
+FINGER_VELOCITY_RANGE = [400, 1000]
 
 PLANEY = 200.0                  # Note trigger Y plane height
 PLANEY_SILENCE = PLANEY + 80.0  # Y height which hand must cross in upward motion, to trigger silence

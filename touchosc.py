@@ -21,13 +21,19 @@ SEND_SONIC = False  # set to true to send
 # get machine's IP address, so we don't have to set it manually
 import subprocess
 ipaddr = subprocess.Popen(["ipconfig", "getifaddr", "en0"], stdout=subprocess.PIPE).communicate()[0].rstrip()
+print ipaddr
 receive_address = ipaddr, 9000
+
+ableton_receive_address = ipaddr, 1234
 
 # Sonic PI only accepts OSC connections from the same machine, i.e. localhost
 send_address_pi = 'localhost',  4557
 
+# send_address_phone = '10.22.0.150', 9999   # your phone's IP address, for sending back current scale name, etc
+# send_address_phone = '192.168.1.102', 9999   # your phone's IP address, for sending back current scale name, etc
 
-send_address_phone = '192.168.1.102', 9999   # your phone's IP address, for sending back current scale name, etc
+send_address_phone = '192.168.1.107', 9999   # your IPAD's IP address, for sending back current scale name, etc
+
 phone = OSC.OSCClient()
 try:
     phone.connect(send_address_phone)
@@ -66,6 +72,12 @@ else:
 
 
 
+
+synth_val = 0
+attack_val = 0.1
+release_val = 0.1
+
+
 # START SCALE DEFINITIONS
 
 current_scale = 0
@@ -78,6 +90,9 @@ MIN_VEL = 20
 MAX_VEL = 80
 
 instrument_names = ['Drums', 'Piano']
+
+synth_names = [':beep', ':blade', ':chipbass', ':dark_ambience', ':dpulse', ':dsaw', ':dtri', ':dull_bell', ':fm',  ':growl', ':hollow', ':hoover', ':mod_beep', ':mod_fm', ':mod_sine', ':mod_tri', ':piano', ':pluck', ':pretty_bell', ':prophet', ':pulse', ':saw', ':sine', ':square', ':subpulse', ':supersaw', ':tb303', ':tri', ':zawa']
+use_synth = ':fm'
 
 Test1 = [0, 2, 5, 6, 7]
 Test2 = [0, 2, 4, 7, 8]
@@ -194,12 +209,12 @@ def test_handler(addr, tags, stuff, source):
     print("with addr : %s" % addr)
     print("typetags %s" % tags)
     print("data %s" % stuff)
-    msg = OSC.OSCMessage()
-    msg.setAddress(addr)
-    msg.append(stuff)
-    c.send(msg)
-    print("return message %s" % msg)
-    print("---")
+    # msg = OSC.OSCMessage()
+    # msg.setAddress(addr)
+    # msg.append(stuff)
+    # c.send(msg)
+    # print("return message %s" % msg)
+    # print("---")
 
 
 
@@ -213,10 +228,17 @@ def hold_handler(addr, tags, stuff, source):
     #print mc
 
 def chan_handler(addr, tags, stuff, source):
-    global mchan
+    global mchan, use_synth, SEND_SONIC
     #print addr, stuff
     mchan = int(stuff[0] * chan_max)
+
+    use_synth = int(stuff[0] * len(synth_names))
+
     print mchan
+
+    if SEND_SONIC:
+        print synth_names[use_synth]
+
 
 def scale_handler(addr, tags, stuff, source):
     global current_scale
@@ -332,15 +354,17 @@ def send_pi(accx, accy, accz):
         # fudge to ignore the regular triggering of the highest note from weird accel values
         if mnote != 108 :
 
-            midiout.send_message([0x90 + mchan, mnote, int(zmag)]) #minst, int(zmag)])
 
             if SEND_SONIC: #and last_note != note and time.time() - last_note_time > 0.1:
                 amp = interp(vz, [4.0, 45.0], [0.1, 1.2])
                 ampstr = ", amp: " + str(amp)
                 sus = interp(accy, [2, 9], [0, 0.5])
                 sustainstr = ", attack: " + str(sus)
-                send_osc( "set_sched_ahead_time! 0.01; use_synth :fm; play " + str(mnote) + ampstr + sustainstr )
+                send_osc( "set_sched_ahead_time! 0.0001; use_synth " + synth_names[use_synth] + "; play " + str(int(mnote+30)) + ampstr + sustainstr )
                 # last_note_time = time.time()
+            else:
+                midiout.send_message([0x90 + mchan, mnote, int(zmag)]) #minst, int(zmag)])
+
 
         last_z_trig = time.time()
         # print "z trig!"
@@ -370,6 +394,111 @@ def send_pi(accx, accy, accz):
 
     # end send-pi function
 
+
+
+# define a message-handler function for the server to call.
+def fader_handler(addr, tags, stuff, source):
+
+    id = addr.split("/").pop()
+    note = interp(stuff[0], [0.0, 1.0], [30, 120])
+    print("id : %s" % id)
+    print("note_count : %s" % note)
+    print("with addr : %s" % addr)
+    print("typetags %s" % tags)
+    print("data %s" % stuff[0])
+    # msg = OSC.OSCMessage()
+    # msg.setAddress(addr)
+    # msg.append(stuff)
+    # print("return message %s" % msg)
+    # print("---")
+
+    # send_osc("play " + str(note) +  ";")
+    send_osc("touchosc_recv('" + addr + "', " + str(stuff[0]) +  ")")
+
+
+# define a message-handler function for the server to call.
+def keys_handler(addr, tags, stuff, source):
+
+    note =  addr.split("/").pop()
+
+    if note == "z":
+        print("Z!!")
+        return
+
+    note = int(note) + 47
+
+    val = float(stuff[0])
+
+    print("note: %s" % note)
+    print("with addr : %s" % addr)
+    print("typetags %s" % tags)
+    print("data %s" % stuff[0])
+    # msg = OSC.OSCMessage()
+    # msg.setAddress(addr)
+    # msg.append(stuff)
+    # print("return message %s" % msg)
+    # print("---")
+    # synth = "use_synth synth_names[ (" + str(synth_val) + " * synth_names.length).to_i ]; "
+
+    if val > 0:
+        asdr = ", attack: " + str(attack_val) + ", release: " + str(release_val)
+        synth = "use_synth synth_names[ (" + str(synth_val) + " * synth_names.length).to_i ]; "
+        send_osc(synth + "play " + str(note) + ", sustain: " + str(val) +  asdr)
+    else:
+        print "NOTEOFF"
+
+
+def xy_handler(addr, tags, stuff, source):
+
+    global attack_val, release_val
+
+    if addr == '/2/xy/1':
+        attack_val = float(stuff[1]) #x
+        release_val = 1.0 - float(stuff[0]) #x
+        print attack_val, release_val
+        return
+
+    # call sonic pi function with signature: touchosc_recv('/page/xy/id/', [xval, yval])
+    send_osc("touchosc_recv('" + addr + "', [" + str(stuff[1]) + ", " + str(stuff[0]) +  "])")
+
+
+def toggle_handler(addr, tags, stuff, source):
+    send_osc("touchosc_recv('" + addr + "', " + str(stuff[0]) +  ")")
+#
+#
+# def toggle_handler(addr, tags, stuff, source):
+#     send_osc("touchosc_recv('" + addr + "', " + str(stuff[0]) +  ")")
+
+
+
+def able_default_handler(addr, tags, stuff, source):
+    # print "DEFAULT"
+    # print stuff
+    return
+
+# such bullshit
+able_vel = 0
+
+def able_vel_handler(addr, tags, stuff, source):
+    global able_vel
+    print stuff
+    # send_osc("touchosc_recv('" + addr + "', " + str(stuff[0]) +  ")")
+    able_vel = stuff[0]
+
+def able_handler(addr, tags, stuff, source):
+    print stuff
+    # send_osc("touchosc_recv('" + addr + "', " + str(stuff[0]) +  ")")
+    if stuff[0] == 60 and able_vel > 0:
+        send_osc("cue :live")
+
+able = OSC.OSCServer(ableton_receive_address)
+able.addDefaultHandlers()
+able.addMsgHandler("default", able_default_handler)
+able.addMsgHandler("/Note1", able_handler)
+able.addMsgHandler("/Velocity1", able_vel_handler)
+
+
+
 s = OSC.OSCServer(receive_address)
 s.addDefaultHandlers()
 s.addMsgHandler("/accxyz", accxyz_handler)
@@ -378,6 +507,57 @@ s.addMsgHandler("/1/fader1", scale_handler)
 s.addMsgHandler("/1/fader2", chan_handler)
 s.addMsgHandler("/1/push1", pedal_handler) #top left
 s.addMsgHandler("/1/push4", hold_handler) #top middle
+
+
+# sonic pi
+
+s.addMsgHandler("/1/xy/1", xy_handler)
+s.addMsgHandler("/1/xy/2", xy_handler)
+s.addMsgHandler("/1/xy/3", xy_handler)
+s.addMsgHandler("/1/xy/4", xy_handler)
+
+s.addMsgHandler("/2/xy/1", xy_handler)
+
+s.addMsgHandler("/2/toggle/1", toggle_handler)
+
+
+s.addMsgHandler("/4/push/1", toggle_handler)
+s.addMsgHandler("/3/push/1", toggle_handler)
+
+
+
+
+for y in range(1, 9):
+    for x in range(1, 17):
+        s.addMsgHandler("/3/multitoggle/1/" + `y` + "/" + `x`, toggle_handler) #top middle
+        s.addMsgHandler("/4/multitoggle/1/" + `y` + "/" + `x`, toggle_handler) #top middle
+
+for y in range(1, 20):
+    s.addMsgHandler("/1/fader/"+`y`, fader_handler)
+    s.addMsgHandler("/2/fader/"+`y`, fader_handler)
+    s.addMsgHandler("/3/fader/"+`y`, fader_handler)
+    s.addMsgHandler("/4/fader/"+`y`, fader_handler)
+
+    s.addMsgHandler("/4/rotary/"+`y`, fader_handler)
+
+
+
+
+for i in range(1, 25    ):
+    s.addMsgHandler("/2/key/" + `i`,        keys_handler)
+
+    s.addMsgHandler("/3/multifader/1/"+`i`, fader_handler)
+    s.addMsgHandler("/4/multifader/1/"+`i`, fader_handler)
+
+
+def f3_handler(addr, tags, stuff, source):
+    global synth_val
+    synth_val = stuff[0]
+s.addMsgHandler("/2/fader/3", f3_handler )
+
+
+
+
 
 for addr in s.getOSCAddressSpace():
     print( addr )
@@ -388,6 +568,13 @@ st = threading.Thread( target = s.serve_forever )
 st.start()
 # and that's it for the OSC
 
+
+if ableton_receive_address:
+    print("\nStarting Ableton Live sync server.")
+    ab = threading.Thread( target = able.serve_forever )
+    ab.start()
+
+
 try :
     while 1 :
         time.sleep(1)
@@ -397,4 +584,9 @@ except KeyboardInterrupt :
     s.close()
     print ("Waiting for Server-thread to finish")
     st.join() ##!!!
+
+    if ableton_receive_address:
+        able.close()
+        ab.join()
+
     print ("Done")
