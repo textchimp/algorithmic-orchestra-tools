@@ -14,6 +14,11 @@
 # need this for our run_code OSC calls to eval as realtime as possible
 set_sched_ahead_time! 0.0001
 
+require_relative '/Users/textchimp/oscencode.rb'
+
+# acceptable synths (no noise or input)
+@good_synths = synth_names - [:cnoise, :chipnoise, :bnoise, :gnoise, :mod_dsaw, :mod_pulse, :mod_saw, :noise, :pnoise, :sound_in, :sound_in_stereo]
+
 # socket for sending OSC events to osc-to-midi.py server, to translate into MIDI note events
 @oscmidi_socket = UDPSocket.new
 @oscmidi_server, @oscmidi_port = '127.0.0.1', 1122
@@ -52,9 +57,375 @@ def netcue(name, opts = {})
     [0, "cue :#{name}, time: #{time.to_s}, count: #{count.to_s}, div: #{div.to_s}"]), 0, @osc_broadcast_server, @osc_broadcast_port)
 end
 
+# custom logging function
+def cl(*str)
+  File.open(Dir.home + '/.sonic-pi/log/lukeh.log', "a+") do |f|
+    f.write str.to_s + "\n"
+  end
+end
+
+# iterate over 2d array:
+##| visiblematrix.each_with_index do |x, xi|
+##|   x.each_with_index do |y, yi|
+##|     puts "element [#{xi}, #{yi}] is #{y}"
+##|   end
+##| end
+
+ ##| # use formatting function for val if defined (for returning strings from array indexes, etc
+  ##| if formatter.is_a? Proc
+  ##|   # use lambda formatting parameter
+  ##|   val = formatter.call( val )
+  ##| else
+  ##|   if @touchosc_reply_format.key? path
+  ##|     val = @touchosc_reply_format[path].call( val )
+  ##|   end
+  ##| end
 
 
 
+def map_to_scale_note(s, min, max, n)
+
+  norm = (min + n) / (max - min).to_f
+  ind = (norm * (s.length-1)).to_i
+  # puts min, max, n, "*******", norm, "[#{ind}]", s.length
+  s[ind]
+end
+
+
+################ TouchOSC handling code
+
+@touchosc_server, @touchosc_port = '192.168.1.107', 9999
+
+@touchosc_update = {}
+
+# we want each beat 1-16 to contain a column array of notes 1-8, which will be played simultaneously
+@touchosc_notegrid = Array.new(16){ Array.new(8){0} }
+
+# beats
+@touchosc_beatgrid = Array.new(16){ Array.new(8){0} }
+
+
+def touchosc_send(path, val)
+  # puts "touchosc_send(): ", path, val
+  # val must be an array
+  begin
+    @osc_broadcast_socket.send(
+      SonicPi::OSC::OscEncode.new.encode_single_message(
+    path, val), 0, @touchosc_server, @touchosc_port)
+  rescue
+    puts "(can't send)"
+  end
+end
+
+
+def touchosc_reply(page, elem, id, label, val) #, formatter=nil)
+
+  path = "/#{page}/#{elem}/#{id}"
+
+
+
+  if elem == 'xy'
+    # xy control
+    ##| puts "REPLY: xy: ", page, elem, id, label, val
+    path = "/#{page}/#{elem}/#{id}/label"
+    touchosc_send(path, [label + ': ' + val.to_s])
+    return
+  elsif elem == 'toggle'
+    path = "/#{page}/#{elem}/#{id}/label"
+    touchosc_send(path, [label]) # + ': ' + val.to_s])
+    return
+  end
+
+  puts "E", elem
+
+  path = path +  "/val"
+  touchosc_send(path, [val])
+
+  path = "/#{page}/#{elem}/#{id}/name"
+  touchosc_send(path, [label])
+
+end
+
+
+
+def touchosc_reset
+  @touchosc_map.each do |key, val|
+    if key.include? "/xy/"
+      # this will run twice, unfortunately, once for the /x key and once for the /y
+      key = key[0..-3] # strip end x/y
+      val = [ @touchosc_map[key + '/y'], @touchosc_map[key + '/x'] ]
+    else
+      val = [val]
+    end
+
+    return if val.nil?
+    puts "touchosc_reset():", key, val
+
+    touchosc_send(key, val)
+  end
+end
+
+
+
+def o(id, label, min_or_max=nil, max=nil) # , opts={})
+
+  coord = ''
+
+  # USE BLOCK INSTEAD?
+  # keep this code as an example of how to add optional parameter arguments at end of function
+  ##| # handle arg combinations
+  ##| if opts.empty?
+  ##|   if max.nil?
+  ##|     puts "no opts 3rd, no max"
+  ##|     min = 0
+  ##|     max = min_or_max
+  ##|     formatter = nil
+  ##|   elsif max.is_a? Hash
+  ##|     puts "no opts 3rd, max is hash"
+  ##|     formatter = max[:f]
+  ##|     min = 0
+  ##|     max = min_or_max
+  ##|   else
+  ##|     puts "min, max set, no no hash"
+  ##|     min = min_or_max
+  ##|     formatter = nil
+  ##|   end
+  ##| else
+  ##|   puts "min, max opts all set"
+  ##|   min = min_or_max
+  ##|   formatter = opts[:f]
+  ##| end
+
+
+  if id.is_a? Integer
+    # default path is a page 1 fader, i.e. "/1/fader/4"
+
+    page = '1'
+    elem = 'fader'
+    id = id.to_s
+
+  else
+    # treat as an OSC path, or shorthand
+
+    parts = id.split('/')
+    if parts.length == 4
+
+      # full path, '/2/fader/3'
+      _, page, elem, id = parts
+
+    elsif parts.length == 2
+
+      # shorthand, '2/3' style, page and id, assume fader: '/2/fader/3'
+      page, id = parts
+      elem = 'fader'
+
+    elsif parts.length == 5
+
+      # full path for xy control, with coord: '/2/xy/3/x'
+      _, page, elem, id, coord = parts
+      coord = '/' + coord
+
+    elsif parts.length == 6
+      #full path for multitoggle
+      _, page, elem, id, y, x = parts
+    else
+      puts "NOT FOUND", id
+      return 0
+    end
+
+  end   # id argument parsing
+
+  path = '/' + page + '/' + elem + '/' + id + coord
+  ##| puts "o() get path: " + path
+
+  return 0 if not @touchosc_map.key? path
+
+  # handle optional arguments
+  if not min_or_max and not max
+
+    # NO ARGS = treat as either button, or default range
+
+    if elem == 'multitoggle'
+      val = @touchosc_notegrid[y.to_i][x.to_i]
+      return val
+    elsif elem == 'toggle'
+      # button type , true/false
+      val = @touchosc_map[path].to_f > 0
+      puts "TOGGLE", val
+      return val
+    else
+      # treat as default range 0-1, i.e. do nothing with value provided by TouchOSC
+      val = @touchosc_map[path].to_f
+      puts "DEFAULT 0-1", val
+    end
+
+  else
+
+    ##| use range to calculate value
+    if max
+      min = min_or_max.to_f
+      max = max.to_f
+    else
+      min = 0
+      max = min_or_max.to_f
+    end
+    val = @touchosc_map[path].to_f * (max - min).to_f + min
+
+  end
+
+
+  # use a hash to store values and only send update if value changed;
+  # should save osc network traffic on updates which would otherwise
+  # be sent on every sonic pi loop iteration
+  if (not @touchosc_update.key? path) or val != @touchosc_update[path]
+
+    puts "UPDATE send:", path, val, @touchosc_update
+    @touchosc_update[path] = val
+
+    val_reply = val   # use new var, in case original val is changed by block
+
+    if block_given?
+
+      val_reply = yield val
+
+    elsif @touchosc_reply_format.key? path
+      # use predefined format lambda from hash
+      val_reply = @touchosc_reply_format[path].call( val )
+    else
+      val_reply = val_reply.round(3) if val_reply.is_a? Numeric
+    end
+
+    touchosc_reply(page, elem, id+coord, label, val_reply) #, formatter)
+
+    ##| else
+    ##|   puts "(no change in val)", path, val, @touchosc_update[path]
+  end
+
+  val  # actually return value for use in parameters
+end
+
+
+def notegrid_print
+  @touchosc_notegrid.each_with_index do |x, xi|
+    l = ''
+    x.each_with_index do |y, yi|
+
+      l += ((not y.nil? and y > 0.0) ? "x" : '.') #"[#{xi}, #{yi}] "
+    end
+    puts l
+  end
+end
+
+
+
+
+def touchosc_recv(addr, val)
+
+  val = val[0] if val.length == 1        # convert from array if necessary
+
+  if addr.include? "/xy/"
+    # special case for /1/xy/1/ controls, which we break into /x and /y keys
+    @touchosc_map[ addr + '/x' ] = val[1]
+    @touchosc_map[addr + '/y' ] = val[0]
+    puts 'touchosc_recv() set xy = ', val
+    return
+  elsif addr.include? "/3/multitoggle/"  # TODO: make separate grids for each page/id multitoggle
+    # multitoggle controls
+    parts = addr.split('/')
+    x = parts[5].to_i - 1
+    y = parts[4].to_i - 1
+    @touchosc_notegrid[x][y] = val
+    return
+  elsif addr.include? "/4/multitoggle/"
+    # multitoggle controls
+    parts = addr.split('/')
+    x = parts[5].to_i - 1
+    y = parts[4].to_i - 1
+    @touchosc_beatgrid[x][y] = val
+    return
+  elsif addr.include? "/3/multifader/"
+    # multitoggle controls
+    parts = addr.split('/')
+    n = parts[4].to_i - 1
+    ##| y = parts[4].to_i - 1
+    @touchosc_notefaders[n] = val
+    return
+  elsif addr.include? "/4/multifader/"
+    # multitoggle controls
+    parts = addr.split('/')
+    n = parts[4].to_i - 1
+    @touchosc_beatfaders[n] = val
+    cl addr, val
+    return
+  elsif addr.include? "/push/"
+    # run lambda function associated with this button
+    cl "PUSH", addr, @touchosc_functions.key?(addr),  @touchosc_functions[addr]
+    @touchosc_functions[addr].call if  @touchosc_functions.key? addr
+    return
+  end
+
+  #default
+  @touchosc_map[addr] = val
+  puts "touchosc_recv() set: ", addr, @touchosc_map[addr]
+end
+
+
+#
+#
+# def touchosc_recv(addr, val)
+#
+#   val = val[0] if val.length == 1
+#
+#   if addr.include? "/xy/"
+#     # special case for /1/xy/1/ controls, which we break into /x and /y keys
+#     @touchosc_map[ addr + '/x' ] = val[1]
+#     @touchosc_map[addr + '/y' ] = val[0]
+#     puts 'touchosc_recv() set xy = ', val
+#     return
+#   elsif addr.include? "/3/multitoggle/"  # TODO: make separate grids for each page/id multitoggle
+#     # multitoggle controls
+#     parts = addr.split('/')
+#     x = parts[5].to_i - 1
+#     y = parts[4].to_i - 1
+#     @touchosc_notegrid[x][y] = val
+#     ##| puts "============ SET:", x, y, val
+#
+#     ##| notegrid_print
+#     return
+#   elsif addr.include? "/4/multitoggle/"  # TODO: make separate grids for each page/id multitoggle
+#     # multitoggle controls
+#     parts = addr.split('/')
+#     x = parts[5].to_i - 1
+#     y = parts[4].to_i - 1
+#     @touchosc_beatgrid[x][y] = val
+#     return
+#   end
+#
+#   #default
+#   @touchosc_map[addr] = val
+#   puts "touchosc_recv() set: ", addr, val
+# end
+
+
+def touchosc_beatled(path, beat)
+  touchosc_send(path + '/' + beat.to_s, [1.0])
+  off = (beat - 1)
+  ##| puts "=====", off
+  off = 16 if off < 1
+  touchosc_send(path + '/' + off.to_s, [0])
+  # TODO: last LED in bar shown as white, to indicate beats/bar
+end
+
+
+
+
+# osc handler, avoid need for relay server
+def osc_default_handler(address, args)
+  # cl address, args
+  touchosc_recv address, args
+end
+
+#################### end TouchOSC code
 
 @last_channel = 0
 
@@ -83,7 +454,8 @@ def posc(note, chan, opts = {})
     channel = chan
   end
 
-  keyswitch = 0 if keyswitch.nil?
+  # keyswitch = 0 if keyswitch.nil?
+  keyswitch = -1 if keyswitch.nil?
   port = 0 if port.nil?
 
   note = *note  # wrap single value in array if necessary
@@ -164,6 +536,14 @@ end
 
 @mousex = 0
 @mousey = 0
+@mousex_ctrl = 0
+@mousey_ctrl = 0
+@mousex_shift = 0
+@mousey_shift = 0
+@mousex_cmd = 0
+@mousey_cmd = 0
+@mousex_opt = 0
+@mousey_opt = 0
 
 @leap_x = 0
 @leap_y = 0
@@ -171,27 +551,104 @@ end
 @leap_roll = 0
 @leap_pinch = 0
 
+def get_mousex(mod)
+  case mod
+  when :ctrl
+    @mousex_ctrl
+  when :shift
+    @mousex_shift
+  when :cmd
+    @mousex_cmd
+  when :opt
+    @mousex_opt
+  end
+end
+
+def get_mousey(mod)
+  case mod
+  when :ctrl
+    @mousey_ctrl
+  when :shift
+    @mousey_shift
+  when :cmd
+    @mousey_cmd
+  when :opt
+    @mousey_opt
+  end
+end
+
+# USAGE:
+# mx(min, max, modifier)
+# mx(min, max) [default modifier: SHIFT]
+# mx(max, modifier)
+# mx(max) [default modifier: SHIFT]
+# mx(modifier)
+
 def mx(*args)
   case args.length
   when 0
-    @mousex
+    @mousex_shift
   when 1
-    @mousex * args[0]
+    if args[0].is_a? Numeric
+      # range max, assume shift mod by default
+      @mousex_shift * args[0]
+    else
+      # assume symbol, treat as key modifier
+      get_mousex(args[0])
+    end
   when 2
-    @mousex * (args[1] - args[0]) + args[0]
+    if args[0].is_a? Numeric and args[1].is_a? Numeric
+      # two numbers, treat as range
+      @mousex_shift * (args[1] - args[0]) + args[0]
+    elsif args[0].is_a? Numeric
+      # first arg is number (max), second is symbol (key)
+      get_mousex(args[1]) * args[0]
+    end
+  when 3
+    # both min & max args, and also key mod
+    get_mousex(args[2]) * (args[1] - args[0])  +  args[0]
+    # @mousex_shift * (args[1] - args[0]) + args[0]
   end
 end
 
 def my(*args)
   case args.length
   when 0
-    @mousey
+    @mousey_shift
   when 1
-    @mousey * args[0]
+    if args[0].is_a? Numeric
+      # range max, assume shift mod by default
+      @mousey_shift * args[0]
+    else
+      # assume symbol, treat as key modifier
+      get_mousey(args[0])
+    end
   when 2
-    @mousey * (args[1] - args[0]) + args[0]
+    if args[0].is_a? Numeric and args[1].is_a? Numeric
+      # two numbers, treat as range
+      @mousey_shift * (args[1] - args[0]) + args[0]
+    elsif args[0].is_a? Numeric
+      # first arg is number (max), second is symbol (key mod)
+      get_mousey(args[1]) * args[0]
+    end
+  when 3
+    # both min & max args, and also key mod
+    get_mousey(args[2]) * (args[1] - args[0])  +  args[0]
   end
 end
+
+# original version
+#
+# def my(*args)
+#   case args.length
+#   when 0
+#     @mousey_shift
+#   when 1
+#     @mousey_shift * args[0]
+#   when 2
+#     @mousey_shift * (args[1] - args[0]) + args[0]
+#   end
+# end
 
 
 
